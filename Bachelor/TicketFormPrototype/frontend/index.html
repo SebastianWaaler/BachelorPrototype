@@ -8,39 +8,53 @@
 </head>
 <body>
     <header>
-
+        <div class="header" id="myHeader">
+            <h1>Ticket Form</h1>
+        </div> 
     </header>
     <div class="bodyContainer">
         <div class="menu"></div>
         <div class="main">
-            <h1>Ticket Form</h1>
-            <div class="div1">
-                <p>Bruk dette skjemaet dersom forespørselen din ikke faller inn under kategoriene i de andre bestillingsskjemaene.</p>
-            </div>
-            <div class="div2">
-                <label for="username">*Brukernavn</label><br>
-                <input type="text" id="username" name="username"> 
-            </div>
-            <div class="div3">
-                <label for="inquiry">*Hva gjelder hendvendelsen din?</label><br>
-                <select id="inquiry">
-                    <option>-- Velg --</option>
-                    <option value="TekniskStøtte">Teknisk støtte</option>
-                    <option value="Innlogging">Innloggign og passord</option>
-                    <option value="Veiledning">Veiledning</option>
-                    <option value="Annet">Annet</option>
-                </select>
-            </div>
-            <div class="div4"> 
-                <label for="Description">*Kort beskrivelse</label><br>
-                <textarea type="text" id="Description" name="Description"></textarea>
-            </div>
-            <div class="div5"> 
-            <button onclick="submitForm()">Send inn</button>
-            </div>
+            <div class="container">
+                <div class="div1">
+                    <p>Bruk dette skjemaet dersom forespørselen din ikke faller inn under kategoriene i de andre bestillingsskjemaene.</p>
+                    <p>Viktig: Hvis du har et problem og ønsker å rapportere en hendelse, venligst bruk skjemaet som er lenker her</p>
+                    <p>Dette skjemaet skal brukes for forespørsler.
+                        Eksempler på forespørsler er:
+                        <ul>
+                            <li>Gjennoppretting av dokument</li>
+                            <li>Tilbakestilling av passord</li>
+                            <li>Forespørsel om IT-utstyr</li>
+                            <li>Tilgang til applikasjoner (skjema)</li>
+                        </ul>
+                    </p>
+                    <p>Advarsel: ikke skriv sensitiv informasjon her</p>
+                </div>
+                <div class="div2">
+                    <label for="username">*Brukernavn</label><br>
+                    <input type="text" id="username" name="username"> 
+                </div>
+                <div class="div3">
+                    <label for="inquiry">*Hva gjelder hendvendelsen din?</label><br>
+                    <select id="inquiry">
+                        <option>-- Velg --</option>
+                        <option value="TekniskStøtte">Teknisk støtte</option>
+                        <option value="Innlogging">Innloggign og passord</option>
+                        <option value="Veiledning">Veiledning</option>
+                        <option value="Annet">Annet</option>
+                    </select>
+                </div>
+                <div class="div4"> 
+                    <label for="Description">*Kort beskrivelse</label><br>
+                    <textarea type="text" id="Description" name="Description"></textarea>
+                </div>
+                <div class="div5"> 
+                <button onclick="submitForm()">Send inn</button>
+                </div>
+                </div>
         </div>
         <div class="fodder"></div>
-        <div class="container">
+        
     </div>
     
     
