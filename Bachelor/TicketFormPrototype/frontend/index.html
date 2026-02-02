@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./style.css"> 
+    <title>TicketForm</title>
+</head>
+<body>
+    <header>
+
+    </header>
+    <div class="bodyContainer">
+        <div class="menu"></div>
+        <div class="main">
+            <h1>Ticket Form</h1>
+            <div class="div1">
+                <p>Bruk dette skjemaet dersom forespørselen din ikke faller inn under kategoriene i de andre bestillingsskjemaene.</p>
+            </div>
+            <div class="div2">
+                <label for="username">*Brukernavn</label><br>
+                <input type="text" id="username" name="username"> 
+            </div>
+            <div class="div3">
+                <label for="inquiry">*Hva gjelder hendvendelsen din?</label><br>
+                <select id="inquiry">
+                    <option>-- Velg --</option>
+                    <option value="TekniskStøtte">Teknisk støtte</option>
+                    <option value="Innlogging">Innloggign og passord</option>
+                    <option value="Veiledning">Veiledning</option>
+                    <option value="Annet">Annet</option>
+                </select>
+            </div>
+            <div class="div4"> 
+                <label for="Description">*Kort beskrivelse</label><br>
+                <textarea type="text" id="Description" name="Description"></textarea>
+            </div>
+            <div class="div5"> 
+            <button onclick="submitForm()">Send inn</button>
+            </div>
+        </div>
+        <div class="fodder"></div>
+        <div class="container">
+    </div>
+    
+    
+</body>
+</html>
