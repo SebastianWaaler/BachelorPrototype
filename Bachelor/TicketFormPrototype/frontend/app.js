@@ -71,18 +71,55 @@ async function submitForm() {
     const title = inquiry;
     const description = `Kategori: ${inquiry}\n\n${desc}`;
 
-    const res = await fetch("http://127.0.0.1:5000/api/tickets", {
+    // 1) Ask backend if we need followups
+    const followRes = await fetch("http://127.0.0.1:5000/api/ai/followups", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: userId, title, description })
     });
 
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Failed to submit ticket");
+    const followData = await followRes.json();
+    if (!followRes.ok) throw new Error(followData.error || "Failed followups");
 
-    alert(`Ticket sendt!\nTid brukt: ${data.time_to_submit_ms} ms`);
+    if (!followData.needs_followup) {
+      // 2) No followups -> submit normally
+      const res = await fetch("http://127.0.0.1:5000/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, title, description })
+      });
 
-    // Optional: lock again until reconfirm (forces new timer next time)
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to submit ticket");
+
+      alert(`Ticket sendt!\nTid brukt: ${data.time_to_submit_ms} ms`);
+    } else {
+      // 3) Followups -> collect answers -> finalize
+      const answers = {};
+      for (const q of followData.questions) {
+        let answer = "";
+        if (q.type === "multiple_choice" && Array.isArray(q.choices) && q.choices.length) {
+          answer = prompt(`${q.question}\nValg:\n- ${q.choices.join("\n- ")}`) || "";
+        } else {
+          answer = prompt(q.question) || "";
+        }
+        answers[q.id] = answer.trim();
+      }
+
+      const finRes = await fetch("http://127.0.0.1:5000/api/ai/finalize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, answers })
+      });
+
+      const finData = await finRes.json();
+      if (!finRes.ok) throw new Error(finData.error || "Failed finalize");
+
+      alert(`Ticket sendt (AI forbedret)!\nTid brukt: ${finData.time_to_submit_ms} ms`);
+      console.log("AI final:", finData.final);
+    }
+
+    // Reset AFTER successful submission (both paths)
     confirmed = false;
     userId = null;
     document.getElementById("submitBtn").disabled = true;
@@ -93,3 +130,4 @@ async function submitForm() {
     alert("Noe gikk galt: " + err.message);
   }
 }
+
