@@ -113,7 +113,6 @@ def generate_followup_questions(title: str, description: str) -> dict:
                             "choices": {"type": "array", "items": {"type": "string"}},
                             "required": {"type": "boolean"}
                         },
-                        # ✅ FIX: choices must be required when strict=True
                         # For yes_no / free_text, model should return choices: []
                         "required": ["id", "type", "question", "choices", "required"]
                     }
