@@ -1,49 +1,60 @@
-#Python file for running the backend
-from flask import Flask, request, jsonify #flask is a web framework for python, it helps: define urls, receive and send HTTP 
-from flask_cors import CORS #adds CORS headers so the browser allows our frontend to call the backend
+# Python file for running the backend
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import time
 import os
 import sqlite3
 import json
 from openai import OpenAI
+from dotenv import load_dotenv
+from pathlib import Path
 
+# Force loading .env from backend folder (and override any existing env var)
+env_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=env_path, override=True)
 
-app = Flask(__name__) #tells Flask where the app is
+# Debug: print only a safe prefix (do NOT print full key)
+_loaded = os.getenv("OPENAI_API_KEY") or ""
+print("Loaded key:", (_loaded[:15] + "...") if _loaded else "MISSING")
+print("ENV PATH:", env_path)
+
+app = Flask(__name__)
 CORS(app)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "..", "tickets.db")
 
-client = OpenAI() 
+# OpenAI client uses OPENAI_API_KEY from env/.env
+client = OpenAI()
 
-def now_ms() -> int: #Function to store the time used on the ticket request
+def now_ms() -> int:
     return int(time.time() * 1000)
 
-def get_conn(): #Opens a connection to the table tickets.db
-    conn = sqlite3.connect(DB_PATH) #Uses the path created earlier
-    conn.row_factory = sqlite3.Row #Easier access to rows
-    conn.execute("PRAGMA foreign_keys = ON;") #Enables foreign key checks; not used
-    conn.execute("PRAGMA journal_mode = WAL;") #Enables WAL mode which allows reads and write to happen at the same time
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA journal_mode = WAL;")
     return conn
 
-def init_db(): #Create the table
-    conn = get_conn() #Enables the connection. The script below creates the table. The rows last_activity_at and ai_turns is for future use as of 04.02
-    conn.executescript(""" 
+def init_db():
+    conn = get_conn()
+    conn.executescript("""
     PRAGMA foreign_keys = ON;
 
     CREATE TABLE IF NOT EXISTS ticket_drafts (
-      user_id INTEGER PRIMARY KEY,         -- user number: 1..99
-      started_at INTEGER NOT NULL,          -- unix ms
+      user_id INTEGER PRIMARY KEY,
+      started_at INTEGER NOT NULL,
       last_activity_at INTEGER NOT NULL,
       ai_turns INTEGER DEFAULT 0,
       state TEXT NOT NULL CHECK (state IN ('draft','submitted','abandoned'))
     );
 
     CREATE TABLE IF NOT EXISTS tickets (
-      user_id INTEGER NOT NULL,             -- user number: 1..99
+      user_id INTEGER NOT NULL,
       title TEXT NOT NULL,
       description TEXT NOT NULL,
-      created_at INTEGER NOT NULL,          -- unix ms
+      created_at INTEGER NOT NULL,
       time_to_submit_ms INTEGER,
       ai_used INTEGER DEFAULT 0,
       status TEXT DEFAULT 'open'
@@ -51,7 +62,6 @@ def init_db(): #Create the table
     """)
     conn.commit()
 
-    # --- lightweight migrations: add columns if they don't exist ---
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(ticket_drafts)").fetchall()}
 
     def add_col(sql):
@@ -103,7 +113,8 @@ def generate_followup_questions(title: str, description: str) -> dict:
                             "choices": {"type": "array", "items": {"type": "string"}},
                             "required": {"type": "boolean"}
                         },
-                        "required": ["id", "type", "question", "required"]
+                        # For yes_no / free_text, model should return choices: []
+                        "required": ["id", "type", "question", "choices", "required"]
                     }
                 }
             },
@@ -111,26 +122,38 @@ def generate_followup_questions(title: str, description: str) -> dict:
         }
     }
 
-    resp = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an IT helpdesk triage assistant. "
-                    "Ask the minimum number of targeted follow-up questions to diagnose the issue. "
-                    "Prefer multiple-choice when possible. Never ask for passwords or sensitive secrets."
-                )
+    try:
+        resp = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an IT helpdesk triage assistant. "
+                        "Ask the minimum number of targeted follow-up questions to diagnose the issue. "
+                        "Prefer multiple-choice when possible. Never ask for passwords or sensitive secrets. "
+                        "Always include a 'choices' array in each question. "
+                        "If the question is not multiple-choice, set choices to an empty array."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Title: {title}\nDescription: {description}\nReturn follow-up questions."
+                }
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": schema["name"],
+                    "schema": schema["schema"],
+                    "strict": True
+                }
             },
-            {
-                "role": "user",
-                "content": f"Title: {title}\nDescription: {description}\nReturn follow-up questions."
-            }
-        ],
-        response_format={"type": "json_schema", "json_schema": schema},
-        temperature=0.2,
-    )
-    return json.loads(resp.output_text)
+            temperature=0.2,
+        )
+        return json.loads(resp.output_text)
+    except Exception as e:
+        raise RuntimeError(f"OpenAI followups failed: {e}")
 
 def improve_ticket_description(title: str, original_description: str, answers: dict) -> dict:
     schema = {
@@ -148,52 +171,60 @@ def improve_ticket_description(title: str, original_description: str, answers: d
         }
     }
 
-    resp = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[
-            {
-                "role": "system",
-                "content": (
-                    "Rewrite IT support tickets into clear, actionable descriptions. "
-                    "Never include or request passwords or secrets."
-                )
+    try:
+        resp = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Rewrite IT support tickets into clear, actionable descriptions. "
+                        "Never include or request passwords or secrets."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Title: {title}\n"
+                        f"Original description:\n{original_description}\n\n"
+                        f"Follow-up answers JSON:\n{json.dumps(answers, ensure_ascii=False)}\n\n"
+                        "Produce the final structured result."
+                    )
+                }
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": schema["name"],
+                    "schema": schema["schema"],
+                    "strict": True
+                }
             },
-            {
-                "role": "user",
-                "content": (
-                    f"Title: {title}\n"
-                    f"Original description:\n{original_description}\n\n"
-                    f"Follow-up answers JSON:\n{json.dumps(answers, ensure_ascii=False)}\n\n"
-                    "Produce the final structured result."
-                )
-            }
-        ],
-        response_format={"type": "json_schema", "json_schema": schema},
-        temperature=0.2,
-    )
-    return json.loads(resp.output_text)
-
+            temperature=0.2,
+        )
+        return json.loads(resp.output_text)
+    except Exception as e:
+        raise RuntimeError(f"OpenAI finalize failed: {e}")
 
 # -----------------------------
 # Routes
 # -----------------------------
 
-@app.get("/api/ping") #get method to see that the backend is running
+@app.get("/api/ping")
 def ping():
     return jsonify({"ok": True})
 
-@app.post("/api/draft/start") #POST method when starting the website and confirming the user
-def start_draft(): #starts a draft for the timer/user
+@app.post("/api/draft/start")
+def start_draft():
     data = request.get_json(force=True)
     user_id = data.get("user_id")
 
-    if not isinstance(user_id, int) or not (1 <= user_id <= 99): #validation for the user input
+    if not isinstance(user_id, int) or not (1 <= user_id <= 99):
         return jsonify({"error": "user_id must be an integer between 1 and 99"}), 400
 
     conn = get_conn()
-    t = now_ms() #for the time in the table
+    t = now_ms()
 
-    # One active draft per user. Re-confirm overwrites and restarts timer.
     conn.execute(
         """
         INSERT INTO ticket_drafts (
@@ -214,13 +245,11 @@ def start_draft(): #starts a draft for the timer/user
         (user_id, t, t)
     )
 
-
     conn.commit()
     conn.close()
-
     return jsonify({"user_id": user_id, "started_at": t})
 
-@app.post("/api/tickets") #POST method for submitting the ticket and calculating the time, also contains validation
+@app.post("/api/tickets")
 def create_ticket():
     data = request.get_json(force=True)
 
@@ -234,7 +263,6 @@ def create_ticket():
         return jsonify({"error": "title and description required"}), 400
 
     conn = get_conn()
-
     draft = conn.execute(
         "SELECT * FROM ticket_drafts WHERE user_id = ? AND state = 'draft'",
         (user_id,)
@@ -244,10 +272,10 @@ def create_ticket():
         conn.close()
         return jsonify({"error": "No active draft for this user. Click Confirm first."}), 400
 
-    created_at = now_ms() #tracking time
-    time_spent = created_at - draft["started_at"] #calculates the time spent
+    created_at = now_ms()
+    time_spent = created_at - draft["started_at"]
 
-    conn.execute( #inserts the ticket into the table
+    conn.execute(
         """
         INSERT INTO tickets (user_id, title, description, created_at, time_to_submit_ms, ai_used, status)
         VALUES (?, ?, ?, ?, ?, 0, 'open')
@@ -255,17 +283,16 @@ def create_ticket():
         (user_id, title, description, created_at, time_spent)
     )
 
-    conn.execute( #update the draft state
+    conn.execute(
         "UPDATE ticket_drafts SET state='submitted', last_activity_at=? WHERE user_id=?",
         (created_at, user_id)
     )
 
     conn.commit()
     conn.close()
-
     return jsonify({"user_id": user_id, "time_to_submit_ms": time_spent}), 201
 
-@app.get("/api/tickets") #GET method for returns the latest ticket
+@app.get("/api/tickets")
 def list_tickets():
     conn = get_conn()
     rows = conn.execute(
@@ -301,19 +328,21 @@ def ai_followups():
         conn.close()
         return jsonify({"error": "No active draft for this user. Click Confirm first."}), 400
 
-    # Store what the user wrote (always)
     conn.execute(
         "UPDATE ticket_drafts SET last_activity_at=?, draft_title=?, draft_description=? WHERE user_id=?",
         (now_ms(), title, description, user_id)
     )
     conn.commit()
 
-    # Decide if we need follow-ups
     if not should_ask_followups(description):
         conn.close()
         return jsonify({"needs_followup": False})
 
-    q = generate_followup_questions(title, description)
+    try:
+        q = generate_followup_questions(title, description)
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 502
 
     conn.execute(
         """
@@ -330,7 +359,6 @@ def ai_followups():
     conn.close()
 
     return jsonify({"needs_followup": True, "questions": q["questions"]})
-
 
 @app.post("/api/ai/finalize")
 def ai_finalize():
@@ -356,7 +384,12 @@ def ai_finalize():
     title = draft["draft_title"]
     original_description = draft["draft_description"]
 
-    final = improve_ticket_description(title, original_description, answers)
+    try:
+        final = improve_ticket_description(title, original_description, answers)
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)}), 502
+
     improved_description = final["improved_description"]
 
     created_at = now_ms()
@@ -391,9 +424,7 @@ def ai_finalize():
         "final": final
     }), 201
 
-
-
 if __name__ == "__main__":
     print("Starting backend on http://127.0.0.1:5000")
     init_db()
-    app.run(host="127.0.0.1", port=5000, debug=True) #defines routing and port
+    app.run(host="127.0.0.1", port=5000, debug=True)
