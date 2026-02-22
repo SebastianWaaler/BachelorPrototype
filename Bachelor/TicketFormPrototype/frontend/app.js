@@ -70,6 +70,7 @@ async function submitForm() {
 
     const title = inquiry;
     const description = `Kategori: ${inquiry}\n\n${desc}`;
+    
 
     // 1) Ask backend if we need followups
     const followRes = await fetch("http://127.0.0.1:5000/api/ai/followups", {
@@ -124,6 +125,7 @@ async function submitForm() {
     userId = null;
     document.getElementById("submitBtn").disabled = true;
     document.getElementById("userStatus").textContent = "Bekreft bruker for å starte ny timer.";
+   
 
   } catch (err) {
     console.error(err);
