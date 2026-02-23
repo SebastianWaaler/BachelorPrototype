@@ -84,7 +84,7 @@ def init_db():
 
 def should_ask_followups(description: str) -> bool:
     d = (description or "").strip().lower()
-    too_short = len(d) < 35
+    too_short = len(d) < 300
     generic_phrases = any(p in d for p in [
         "cant login", "can't login", "cannot login", "login problem",
         "problem with the internet", "internet problem",
