@@ -116,7 +116,7 @@ async function submitForm() {
       const finData = await finRes.json();
       if (!finRes.ok) throw new Error(finData.error || "Failed finalize");
 
-      alert(`Ticket sendt (AI forbedret)!\nTid brukt: ${finData.time_to_submit_ms} ms`);
+      alert(`Ticket sendt (AI forbedret)!\nTid brukt: ${finData.time_to_submit_ms} s`);
       console.log("AI final:", finData.final);
     }
 
