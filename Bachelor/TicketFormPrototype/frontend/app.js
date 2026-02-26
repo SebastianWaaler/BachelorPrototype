@@ -68,6 +68,11 @@ async function submitForm() {
       return;
     }
 
+    /* 
+    Shalom mamma
+
+    */
+
     const title = inquiry;
     const description = `Kategori: ${inquiry}\n\n${desc}`;
     
