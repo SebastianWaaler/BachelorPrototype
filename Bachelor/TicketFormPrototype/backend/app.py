@@ -106,6 +106,8 @@ def init_db():
     CREATE TABLE IF NOT EXISTS ticket_drafts (
       user_id INTEGER PRIMARY KEY,
       started_at INTEGER NOT NULL,
+      user_id INTEGER PRIMARY KEY,
+      started_at INTEGER NOT NULL,
       last_activity_at INTEGER NOT NULL,
       ai_turns INTEGER DEFAULT 0,
       state TEXT NOT NULL CHECK (state IN ('draft','submitted','abandoned'))
@@ -113,8 +115,10 @@ def init_db():
 
     CREATE TABLE IF NOT EXISTS tickets (
       user_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
       title TEXT NOT NULL,
       description TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       time_to_submit_ms INTEGER,
       ai_used INTEGER DEFAULT 0,
@@ -160,6 +164,7 @@ def should_ask_followups(description: str) -> bool:
     This is intentionally simple and can be tuned based on real user behavior.
     """
     d = (description or "").strip().lower()
+    too_short = len(d) < 300
     too_short = len(d) < 300
     generic_phrases = any(p in d for p in [
         "cant login", "can't login", "cannot login", "login problem",
@@ -319,6 +324,7 @@ def improve_ticket_description(title: str, original_description: str, answers: d
 # -----------------------------
 
 @app.get("/api/ping")
+@app.get("/api/ping")
 def ping():
     """Health check endpoint: returns {"ok": true} if the server is running."""
     return jsonify({"ok": True})
@@ -344,6 +350,7 @@ def start_draft():
         return jsonify({"error": "user_id must be an integer between 1 and 99"}), 400
 
     conn = get_conn()
+    t = now_ms()
     t = now_ms()
 
     # "Upsert" behavior:
@@ -373,6 +380,7 @@ def start_draft():
     conn.close()
     return jsonify({"user_id": user_id, "started_at": t})
 
+@app.post("/api/tickets")
 @app.post("/api/tickets")
 def create_ticket():
     """
@@ -433,6 +441,7 @@ def create_ticket():
     conn.close()
     return jsonify({"user_id": user_id, "time_to_submit_ms": time_spent}), 201
 
+@app.get("/api/tickets")
 @app.get("/api/tickets")
 def list_tickets():
     """
