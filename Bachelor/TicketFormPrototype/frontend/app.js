@@ -24,10 +24,13 @@ async function confirmUser() {
 
   try {
     // Start server-side timer (draft) only after confirm
+    const tableSelect = document.getElementById("tableSelect");
+    const tableChoice = Number(tableSelect ? tableSelect.value : 1);
+
     const res = await fetch("http://127.0.0.1:5000/api/draft/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: id })
+      body: JSON.stringify({ user_id: id, table: tableChoice })
     });
 
     const data = await res.json();
@@ -93,7 +96,7 @@ async function submitForm() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to submit ticket");
 
-      alert(`Ticket sendt!\nTid brukt: ${data.time_to_submit_ms} ms`);
+      alert(`Ticket sendt!\nTid brukt: ${data.time_to_submit_ms} s`);
     } else {
       // 3) Followups -> collect answers -> finalize
       const answers = {};
@@ -116,7 +119,7 @@ async function submitForm() {
       const finData = await finRes.json();
       if (!finRes.ok) throw new Error(finData.error || "Failed finalize");
 
-      alert(`Ticket sendt (AI forbedret)!\nTid brukt: ${finData.time_to_submit_ms} ms`);
+      alert(`Ticket sendt (AI forbedret)!\nTid brukt: ${finData.time_to_submit_ms} s\nData sendt til Tabell: ${finData.log_table}`);
       console.log("AI final:", finData.final);
     }
 

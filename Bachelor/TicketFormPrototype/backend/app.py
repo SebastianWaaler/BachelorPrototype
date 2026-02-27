@@ -19,7 +19,7 @@ print("Loaded key:", (_loaded[:15] + "...") if _loaded else "MISSING")
 print("ENV PATH:", env_path)
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "..", "tickets.db")
@@ -27,38 +27,77 @@ DB_PATH = os.path.join(BASE_DIR, "..", "tickets.db")
 # OpenAI client uses OPENAI_API_KEY from env/.env
 client = OpenAI()
 
-def now_ms() -> int:
-    return int(time.time() * 1000)
+def now_s() -> int: # Defines the timer 
+    return int(time.time())
 
-def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+def get_conn(): # Establishes connection to the database, enabling foreign keys and journal mode (multiple entries at once)
+    conn = sqlite3.connect(
+        DB_PATH,
+        timeout=10,
+        isolation_level=None,
+        check_same_thread=False
+        )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA busy_timeout = 10000;")
     return conn
 
-def init_db():
+def init_db(): #Creates the tables
     conn = get_conn()
     conn.executescript("""
     PRAGMA foreign_keys = ON;
 
     CREATE TABLE IF NOT EXISTS ticket_drafts (
       user_id INTEGER PRIMARY KEY,
-      started_at INTEGER NOT NULL,
-      last_activity_at INTEGER NOT NULL,
       ai_turns INTEGER DEFAULT 0,
-      state TEXT NOT NULL CHECK (state IN ('draft','submitted','abandoned'))
+                        state TEXT NOT NULL CHECK (state IN ('draft','submitted','abandoned')),
+                        started_at INTEGER,
+                        submitted_at INTEGER,
+                        log_table INTEGER
     );
 
-    CREATE TABLE IF NOT EXISTS tickets (
-      user_id INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      description TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      time_to_submit_ms INTEGER,
-      ai_used INTEGER DEFAULT 0,
-      status TEXT DEFAULT 'open'
-    );
+        -- Create five separate ticket tables (users choose one when starting a draft)
+        CREATE TABLE IF NOT EXISTS tickets_1 (
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            time_to_submit_ms INTEGER,
+            ai_used INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'open'
+        );
+        CREATE TABLE IF NOT EXISTS tickets_2 (
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            time_to_submit_ms INTEGER,
+            ai_used INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'open'
+        );
+        CREATE TABLE IF NOT EXISTS tickets_3 (
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            time_to_submit_ms INTEGER,
+            ai_used INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'open'
+        );
+        CREATE TABLE IF NOT EXISTS tickets_4 (
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            time_to_submit_ms INTEGER,
+            ai_used INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'open'
+        );
+        CREATE TABLE IF NOT EXISTS tickets_5 (
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            time_to_submit_ms INTEGER,
+            ai_used INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'open'
+        );
     """)
     conn.commit()
 
@@ -79,6 +118,13 @@ def init_db():
         add_col("ALTER TABLE ticket_drafts ADD COLUMN ai_questions_json TEXT;")
     if "ai_answers_json" not in cols:
         add_col("ALTER TABLE ticket_drafts ADD COLUMN ai_answers_json TEXT;")
+
+    if "started_at" not in cols:
+        add_col("ALTER TABLE ticket_drafts ADD COLUMN started_at INTEGER;")
+    if "submitted_at" not in cols:
+        add_col("ALTER TABLE ticket_drafts ADD COLUMN submitted_at INTEGER;")
+    if "log_table" not in cols:
+        add_col("ALTER TABLE ticket_drafts ADD COLUMN log_table INTEGER;")
 
     conn.close()
 
@@ -206,9 +252,8 @@ def improve_ticket_description(title: str, original_description: str, answers: d
     except Exception as e:
         raise RuntimeError(f"OpenAI finalize failed: {e}")
 
-# -----------------------------
+
 # Routes
-# -----------------------------
 
 @app.get("/api/ping")
 def ping():
@@ -218,36 +263,45 @@ def ping():
 def start_draft():
     data = request.get_json(force=True)
     user_id = data.get("user_id")
+    table_choice = data.get("table")
+
+    # validate table choice (1-5); default to 1
+    try:
+        table_choice = int(table_choice) if table_choice is not None else 1
+    except Exception:
+        raise ValueError("table must be an integer between 1 and 5")    
+    if table_choice < 1 or table_choice > 5:
+        return jsonify({"error": "table must be integer between 1 and 5"}), 400
 
     if not isinstance(user_id, int) or not (1 <= user_id <= 99):
         return jsonify({"error": "user_id must be an integer between 1 and 99"}), 400
 
     conn = get_conn()
-    t = now_ms()
+    t = now_s()
 
     conn.execute(
         """
         INSERT INTO ticket_drafts (
-            user_id, started_at, last_activity_at, state,
-            draft_title, draft_description, ai_questions_json, ai_answers_json, ai_turns
+            user_id, state,
+            draft_title, draft_description, ai_questions_json, ai_answers_json, ai_turns, started_at, log_table
         )
-        VALUES (?, ?, ?, 'draft', NULL, NULL, NULL, NULL, 0)
+        VALUES (?, 'draft', NULL, NULL, NULL, NULL, 0, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
-            started_at = excluded.started_at,
-            last_activity_at = excluded.last_activity_at,
             state = 'draft',
             draft_title = NULL,
             draft_description = NULL,
             ai_questions_json = NULL,
             ai_answers_json = NULL,
-            ai_turns = 0
+            ai_turns = 0,
+            started_at = excluded.started_at,
+            log_table = excluded.log_table
         """,
-        (user_id, t, t)
+        (user_id, t, table_choice)
     )
 
     conn.commit()
     conn.close()
-    return jsonify({"user_id": user_id, "started_at": t})
+    return jsonify({"user_id": user_id})
 
 @app.post("/api/tickets")
 def create_ticket():
@@ -272,19 +326,26 @@ def create_ticket():
         conn.close()
         return jsonify({"error": "No active draft for this user. Click Confirm first."}), 400
 
-    created_at = now_ms()
+    created_at = now_s()
     time_spent = created_at - draft["started_at"]
 
+    # Determine which tickets table to use (tickets_1 .. tickets_5)
+    tbl_idx = draft["log_table"]
+    try:
+        tbl_idx = int(tbl_idx)
+    except Exception:
+        tbl_idx = 1
+    if tbl_idx < 1 or tbl_idx > 5:
+        tbl_idx = 1
+    tickets_table = f"tickets_{tbl_idx}"
+
     conn.execute(
-        """
-        INSERT INTO tickets (user_id, title, description, created_at, time_to_submit_ms, ai_used, status)
-        VALUES (?, ?, ?, ?, ?, 0, 'open')
-        """,
-        (user_id, title, description, created_at, time_spent)
+        f"INSERT INTO {tickets_table} (user_id, title, description, time_to_submit_ms, ai_used, status) VALUES (?, ?, ?, ?, 0, 'open')",
+        (user_id, title, description, time_spent)
     )
 
     conn.execute(
-        "UPDATE ticket_drafts SET state='submitted', last_activity_at=? WHERE user_id=?",
+        "UPDATE ticket_drafts SET state='submitted', submitted_at=? WHERE user_id=?",
         (created_at, user_id)
     )
 
@@ -295,11 +356,19 @@ def create_ticket():
 @app.get("/api/tickets")
 def list_tickets():
     conn = get_conn()
+    # Aggregate tickets from all five tables
     rows = conn.execute(
         """
-        SELECT user_id, title, created_at, time_to_submit_ms, status
-        FROM tickets
-        ORDER BY created_at DESC
+        SELECT user_id, title, time_to_submit_ms, status FROM tickets_1
+        UNION ALL
+        SELECT user_id, title, time_to_submit_ms, status FROM tickets_2
+        UNION ALL
+        SELECT user_id, title, time_to_submit_ms, status FROM tickets_3
+        UNION ALL
+        SELECT user_id, title, time_to_submit_ms, status FROM tickets_4
+        UNION ALL
+        SELECT user_id, title, time_to_submit_ms, status FROM tickets_5
+        ORDER BY user_id DESC
         LIMIT 100
         """
     ).fetchall()
@@ -329,8 +398,8 @@ def ai_followups():
         return jsonify({"error": "No active draft for this user. Click Confirm first."}), 400
 
     conn.execute(
-        "UPDATE ticket_drafts SET last_activity_at=?, draft_title=?, draft_description=? WHERE user_id=?",
-        (now_ms(), title, description, user_id)
+        "UPDATE ticket_drafts SET draft_title=?, draft_description=? WHERE user_id=?",
+        (title, description, user_id)
     )
     conn.commit()
 
@@ -347,12 +416,11 @@ def ai_followups():
     conn.execute(
         """
         UPDATE ticket_drafts
-        SET last_activity_at=?,
-            ai_questions_json=?,
+        SET ai_questions_json=?,
             ai_turns=ai_turns+1
         WHERE user_id=?
         """,
-        (now_ms(), json.dumps(q, ensure_ascii=False), user_id)
+        (json.dumps(q, ensure_ascii=False), user_id)
     )
 
     conn.commit()
@@ -392,27 +460,34 @@ def ai_finalize():
 
     improved_description = final["improved_description"]
 
-    created_at = now_ms()
+    created_at = now_s()
     time_spent = created_at - draft["started_at"]
 
+    # Insert into the same chosen tickets_N table as the draft
+    tbl_idx = draft["log_table"] or 1
+    try:
+        tbl_idx = int(tbl_idx)
+    except Exception:
+        tbl_idx = 1
+    if tbl_idx < 1 or tbl_idx > 5:
+        tbl_idx = 1
+    tickets_table = f"tickets_{tbl_idx}"
+
     conn.execute(
-        """
-        INSERT INTO tickets (user_id, title, description, created_at, time_to_submit_ms, ai_used, status)
-        VALUES (?, ?, ?, ?, ?, 1, 'open')
-        """,
-        (user_id, title, improved_description, created_at, time_spent)
+        f"INSERT INTO {tickets_table} (user_id, title, description, time_to_submit_ms, ai_used, status) VALUES (?, ?, ?, ?, 1, 'open')",
+        (user_id, title, improved_description, time_spent)
     )
 
     conn.execute(
         """
         UPDATE ticket_drafts
         SET state='submitted',
-            last_activity_at=?,
             ai_answers_json=?,
-            ai_turns=ai_turns+1
+            ai_turns=ai_turns+1,
+            submitted_at=?
         WHERE user_id=?
         """,
-        (created_at, json.dumps(answers, ensure_ascii=False), user_id)
+        (json.dumps(answers, ensure_ascii=False), created_at, user_id)
     )
 
     conn.commit()
