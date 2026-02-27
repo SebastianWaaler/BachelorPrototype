@@ -1,30 +1,69 @@
-# Python file for running the backend
+"""
+backend.py
+
+Flask backend for a simple IT helpdesk ticket app.
+
+What this service does (high level)
+-----------------------------------
+1) Tracks a user's "ticket draft" (when they started, what they typed, AI Q/A state).
+2) Lets a user submit a ticket normally (title + description) OR use AI:
+   - AI can ask follow-up questions if the initial description is too vague.
+   - AI can then produce an improved, clearer final description.
+3) Stores everything in a local SQLite database (tickets.db).
+
+Key concepts in the DB
+----------------------
+- ticket_drafts: one active draft per user_id (user_id is the primary key).
+  This table supports the "Confirm first" flow: user starts a draft, then submits/uses AI.
+- tickets: the final submitted tickets (whether AI was used or not).
+
+Security / privacy notes
+------------------------
+- The AI prompts explicitly avoid asking for passwords or secrets.
+- This server accepts CORS requests (useful for a separate frontend).
+"""
+
+# -----------------------------
+# Imports
+# -----------------------------
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+
 import time
 import os
 import sqlite3
 import json
+
 from openai import OpenAI
 from dotenv import load_dotenv
 from pathlib import Path
 
-# Force loading .env from backend folder (and override any existing env var)
+# -----------------------------
+# Environment / configuration
+# -----------------------------
+
+# Force loading .env from the same folder as this backend file.
+# `override=True` means values in that .env will replace any already-set env vars.
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path, override=True)
 
-# Debug: print only a safe prefix (do NOT print full key)
-_loaded = os.getenv("OPENAI_API_KEY") or ""
-print("Loaded key:", (_loaded[:15] + "...") if _loaded else "MISSING")
-print("ENV PATH:", env_path)
-
+# Create the Flask app and allow cross-origin requests.
+# CORS is needed because the frontend runs on a different port/domain.
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
+# Absolute path to this backend folder.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Database path: one level up from backend folder, named tickets.db.
+# Example structure:
+#   project/
+#     tickets.db
+#     backend/
+#       backend.py  (this file)
 DB_PATH = os.path.join(BASE_DIR, "..", "tickets.db")
 
-# OpenAI client uses OPENAI_API_KEY from env/.env
+# OpenAI client picks up OPENAI_API_KEY from environment variables / .env file.
 client = OpenAI()
 
 def now_s() -> int: # Defines the timer 
@@ -45,11 +84,19 @@ def get_conn(): # Establishes connection to the database, enabling foreign keys 
 
 def init_db(): #Creates the tables
     conn = get_conn()
+
+    # Create the main tables if they don't exist.
+    # ticket_drafts has one row per user_id (PRIMARY KEY).
+    # tickets stores submitted tickets and metadata.
     conn.executescript("""
     PRAGMA foreign_keys = ON;
 
     CREATE TABLE IF NOT EXISTS ticket_drafts (
       user_id INTEGER PRIMARY KEY,
+      started_at INTEGER NOT NULL,
+      user_id INTEGER PRIMARY KEY,
+      started_at INTEGER NOT NULL,
+      last_activity_at INTEGER NOT NULL,
       ai_turns INTEGER DEFAULT 0,
                         state TEXT NOT NULL CHECK (state IN ('draft','submitted','abandoned')),
                         started_at INTEGER,
@@ -101,15 +148,21 @@ def init_db(): #Creates the tables
     """)
     conn.commit()
 
+    # Read the existing columns in ticket_drafts so we can add missing ones.
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(ticket_drafts)").fetchall()}
 
     def add_col(sql):
+        """
+        Helper to add a column. If it already exists, SQLite raises OperationalError.
+        We ignore that to make the operation idempotent.
+        """
         try:
             conn.execute(sql)
             conn.commit()
         except sqlite3.OperationalError:
             pass
 
+    # Columns added over time (migration style)
     if "draft_title" not in cols:
         add_col("ALTER TABLE ticket_drafts ADD COLUMN draft_title TEXT;")
     if "draft_description" not in cols:
@@ -129,7 +182,17 @@ def init_db(): #Creates the tables
     conn.close()
 
 def should_ask_followups(description: str) -> bool:
+    """
+    Quick heuristic to decide whether the AI should ask follow-up questions.
+
+    Current logic:
+    - If description is too short (< 300 chars) OR
+    - If it contains common vague phrases ("not working", "help", "can't login", etc.)
+
+    This is intentionally simple and can be tuned based on real user behavior.
+    """
     d = (description or "").strip().lower()
+    too_short = len(d) < 300
     too_short = len(d) < 300
     generic_phrases = any(p in d for p in [
         "cant login", "can't login", "cannot login", "login problem",
@@ -139,6 +202,20 @@ def should_ask_followups(description: str) -> bool:
     return too_short or generic_phrases
 
 def generate_followup_questions(title: str, description: str) -> dict:
+    """
+    Ask the OpenAI model to generate a small set of follow-up questions.
+
+    Output is forced into a strict JSON schema so the frontend can render it reliably.
+
+    Returns:
+      dict like:
+        {
+          "questions": [
+            {"id": "...", "type": "...", "question": "...", "choices": [...], "required": true},
+            ...
+          ]
+        }
+    """
     schema = {
         "name": "followup_questions",
         "schema": {
@@ -153,13 +230,15 @@ def generate_followup_questions(title: str, description: str) -> dict:
                         "type": "object",
                         "additionalProperties": False,
                         "properties": {
+                            # id lets the frontend map answers back to the right question.
                             "id": {"type": "string"},
+                            # question "type" controls how the frontend renders the UI.
                             "type": {"type": "string", "enum": ["yes_no", "multiple_choice", "free_text"]},
                             "question": {"type": "string"},
+                            # Always present. For yes_no/free_text it must be [] (empty array).
                             "choices": {"type": "array", "items": {"type": "string"}},
                             "required": {"type": "boolean"}
                         },
-                        # For yes_no / free_text, model should return choices: []
                         "required": ["id", "type", "question", "choices", "required"]
                     }
                 }
@@ -169,6 +248,8 @@ def generate_followup_questions(title: str, description: str) -> dict:
     }
 
     try:
+        # Using the Responses API with JSON Schema output enforcement.
+        # Temperature is low to reduce randomness.
         resp = client.responses.create(
             model="gpt-4.1-mini",
             input=[
@@ -197,11 +278,24 @@ def generate_followup_questions(title: str, description: str) -> dict:
             },
             temperature=0.2,
         )
+
+        # `resp.output_text` is expected to be JSON because of json_schema formatting.
         return json.loads(resp.output_text)
+
     except Exception as e:
+        # Raise a clear error up to the route handler.
         raise RuntimeError(f"OpenAI followups failed: {e}")
 
 def improve_ticket_description(title: str, original_description: str, answers: dict) -> dict:
+    """
+    Produce the final "improved" ticket from the original description + follow-up answers.
+
+    Returns a structured dict including:
+      - improved_description: rewritten final description
+      - category_guess: a best-effort category label
+      - urgency_guess: low/medium/high
+      - missing_info: list of remaining info gaps
+    """
     schema = {
         "name": "final_ticket",
         "schema": {
@@ -249,6 +343,7 @@ def improve_ticket_description(title: str, original_description: str, answers: d
             temperature=0.2,
         )
         return json.loads(resp.output_text)
+
     except Exception as e:
         raise RuntimeError(f"OpenAI finalize failed: {e}")
 
@@ -256,11 +351,24 @@ def improve_ticket_description(title: str, original_description: str, answers: d
 # Routes
 
 @app.get("/api/ping")
+@app.get("/api/ping")
 def ping():
+    """Health check endpoint: returns {"ok": true} if the server is running."""
     return jsonify({"ok": True})
 
 @app.post("/api/draft/start")
 def start_draft():
+    """
+    Start (or reset) a draft session for a user.
+
+    Expected JSON body:
+      { "user_id": 1 }
+
+    Behavior:
+    - Creates a new row in ticket_drafts if it doesn't exist.
+    - If it already exists, resets it back to a fresh 'draft' state.
+    - Clears any previous stored title/description/questions/answers for that user.
+    """
     data = request.get_json(force=True)
     user_id = data.get("user_id")
     table_choice = data.get("table")
@@ -273,12 +381,16 @@ def start_draft():
     if table_choice < 1 or table_choice > 5:
         return jsonify({"error": "table must be integer between 1 and 5"}), 400
 
+    # Restricting user_id to 1..99 keeps this demo app simple for testing
     if not isinstance(user_id, int) or not (1 <= user_id <= 99):
         return jsonify({"error": "user_id must be an integer between 1 and 99"}), 400
 
     conn = get_conn()
     t = now_s()
 
+    # "Upsert" behavior:
+    # - INSERT a new draft row for this user
+    # - OR if user_id already exists, overwrite/reset that row to a new draft state
     conn.execute(
         """
         INSERT INTO ticket_drafts (
@@ -304,7 +416,19 @@ def start_draft():
     return jsonify({"user_id": user_id})
 
 @app.post("/api/tickets")
+@app.post("/api/tickets")
 def create_ticket():
+    """
+    Submit a ticket WITHOUT using AI follow-ups.
+
+    Expected JSON body:
+      { "user_id": 1, "title": "Printer issue", "description": "..." }
+
+    Important:
+    - This endpoint requires that a draft exists in state='draft'.
+      The intended UI flow is: user clicks Confirm -> /api/draft/start, then submits.
+    - This endpoint always stores ai_used = 0.
+    """
     data = request.get_json(force=True)
 
     user_id = data.get("user_id")
@@ -317,6 +441,8 @@ def create_ticket():
         return jsonify({"error": "title and description required"}), 400
 
     conn = get_conn()
+
+    # Ensure there is an active draft (prevents submitting without starting the flow).
     draft = conn.execute(
         "SELECT * FROM ticket_drafts WHERE user_id = ? AND state = 'draft'",
         (user_id,)
@@ -344,6 +470,7 @@ def create_ticket():
         (user_id, title, description, time_spent)
     )
 
+    # Mark the draft as submitted so it can't be reused accidentally.
     conn.execute(
         "UPDATE ticket_drafts SET state='submitted', submitted_at=? WHERE user_id=?",
         (created_at, user_id)
@@ -354,7 +481,17 @@ def create_ticket():
     return jsonify({"user_id": user_id, "time_to_submit_ms": time_spent}), 201
 
 @app.get("/api/tickets")
+@app.get("/api/tickets")
 def list_tickets():
+    """
+    List the most recent tickets (up to 100).
+
+    Returns an array like:
+      [
+        { "user_id": 1, "title": "...", "created_at": ..., "time_to_submit_ms": ..., "status": "open" },
+        ...
+      ]
+    """
     conn = get_conn()
     # Aggregate tickets from all five tables
     rows = conn.execute(
@@ -377,6 +514,23 @@ def list_tickets():
 
 @app.post("/api/ai/followups")
 def ai_followups():
+    """
+    Decide if we need follow-up questions, and if so generate them via OpenAI.
+
+    Expected JSON body:
+      { "user_id": 1, "title": "Can't login", "description": "..." }
+
+    Flow:
+    1) Validate user + require an active draft.
+    2) Save the user's title/description into the draft table (so finalize can use it).
+    3) If description is already detailed enough -> return needs_followup=false
+    4) Otherwise call OpenAI to generate questions, store them, return them to frontend.
+
+    Response examples:
+      { "needs_followup": false }
+    or
+      { "needs_followup": true, "questions": [ ... ] }
+    """
     data = request.get_json(force=True)
     user_id = data.get("user_id")
     title = (data.get("title") or "").strip()
@@ -388,6 +542,8 @@ def ai_followups():
         return jsonify({"error": "title and description required"}), 400
 
     conn = get_conn()
+
+    # Must have an active draft for the current user.
     draft = conn.execute(
         "SELECT * FROM ticket_drafts WHERE user_id=? AND state='draft'",
         (user_id,)
@@ -397,22 +553,27 @@ def ai_followups():
         conn.close()
         return jsonify({"error": "No active draft for this user. Click Confirm first."}), 400
 
+    # Persist what the user typed into the draft so /ai/finalize can use it later.
     conn.execute(
         "UPDATE ticket_drafts SET draft_title=?, draft_description=? WHERE user_id=?",
         (title, description, user_id)
     )
     conn.commit()
 
+    # If the description looks sufficiently detailed, skip AI questions.
     if not should_ask_followups(description):
         conn.close()
         return jsonify({"needs_followup": False})
 
+    # Generate follow-up questions from OpenAI.
     try:
         q = generate_followup_questions(title, description)
     except Exception as e:
         conn.close()
+        # 502 indicates a bad gateway / upstream error (OpenAI in this case).
         return jsonify({"error": str(e)}), 502
 
+    # Store questions in the draft and track that we used AI (ai_turns++ for analytics/debugging).
     conn.execute(
         """
         UPDATE ticket_drafts
@@ -426,10 +587,36 @@ def ai_followups():
     conn.commit()
     conn.close()
 
+    # Return only the "questions" list to keep frontend simpler.
     return jsonify({"needs_followup": True, "questions": q["questions"]})
 
 @app.post("/api/ai/finalize")
 def ai_finalize():
+    """
+    Finalize a ticket using the AI follow-up answers.
+
+    Expected JSON body:
+      { "user_id": 1, "answers": { "<question_id>": "<answer>", ... } }
+
+    Flow:
+    1) Validate user + answers.
+    2) Load the current draft (must exist and have saved title/description).
+    3) Call OpenAI to produce an improved description + metadata.
+    4) Insert ticket with ai_used=1.
+    5) Mark draft as submitted and store answers JSON for audit/debug.
+
+    Response:
+      {
+        "user_id": 1,
+        "time_to_submit_ms": ...,
+        "final": {
+          "improved_description": "...",
+          "category_guess": "...",
+          "urgency_guess": "low|medium|high",
+          "missing_info": [...]
+        }
+      }
+    """
     data = request.get_json(force=True)
     user_id = data.get("user_id")
     answers = data.get("answers") or {}
@@ -440,6 +627,8 @@ def ai_finalize():
         return jsonify({"error": "answers must be a non-empty object"}), 400
 
     conn = get_conn()
+
+    # Load the draft and ensure it contains the user's original title/description.
     draft = conn.execute(
         "SELECT * FROM ticket_drafts WHERE user_id=? AND state='draft'",
         (user_id,)
@@ -452,6 +641,7 @@ def ai_finalize():
     title = draft["draft_title"]
     original_description = draft["draft_description"]
 
+    # Ask OpenAI to rewrite the ticket + add metadata.
     try:
         final = improve_ticket_description(title, original_description, answers)
     except Exception as e:
@@ -478,6 +668,7 @@ def ai_finalize():
         (user_id, title, improved_description, time_spent)
     )
 
+    # Mark the draft as submitted and store the answers for traceability.
     conn.execute(
         """
         UPDATE ticket_drafts
@@ -499,7 +690,16 @@ def ai_finalize():
         "final": final
     }), 201
 
+# -----------------------------
+# Local dev server entry point
+# -----------------------------
 if __name__ == "__main__":
+    # Only runs when executing this file directly:
+    #   python backend.py
     print("Starting backend on http://127.0.0.1:5000")
+
+    # Ensure DB schema exists before serving requests.
     init_db()
+
+    # Flask dev server (debug=True enables auto-reload + verbose errors).
     app.run(host="127.0.0.1", port=5000, debug=True)
