@@ -92,16 +92,16 @@ def init_db(): #Creates the tables
     PRAGMA foreign_keys = ON;
 
     CREATE TABLE IF NOT EXISTS ticket_drafts (
-      user_id INTEGER PRIMARY KEY,
-      started_at INTEGER NOT NULL,
-      user_id INTEGER PRIMARY KEY,
-      started_at INTEGER NOT NULL,
-      last_activity_at INTEGER NOT NULL,
-      ai_turns INTEGER DEFAULT 0,
-                        state TEXT NOT NULL CHECK (state IN ('draft','submitted','abandoned')),
-                        started_at INTEGER,
-                        submitted_at INTEGER,
-                        log_table INTEGER
+        user_id INTEGER PRIMARY KEY,
+        ai_turns INTEGER DEFAULT 0,
+        state TEXT NOT NULL CHECK (state IN ('draft','submitted','abandoned')),
+        draft_title TEXT,
+        draft_description TEXT,
+        ai_questions_json TEXT,
+        ai_answers_json TEXT,
+        started_at INTEGER,
+        submitted_at INTEGER,
+        log_table INTEGER
     );
 
         -- Create five separate ticket tables (users choose one when starting a draft)
@@ -181,120 +181,78 @@ def init_db(): #Creates the tables
 
     conn.close()
 
-def should_ask_followups(description: str) -> bool:
-    """
-    Quick heuristic to decide whether the AI should ask follow-up questions.
 
-    Current logic:
-    - If description is too short (< 300 chars) OR
-    - If it contains common vague phrases ("not working", "help", "can't login", etc.)
+# =============================================================================
+# AI CONVERSATION ENGINE
+# =============================================================================
+#
+# Design: one endpoint (/api/ai/chat) drives the entire question loop.
+# The full conversation (questions + answers) is stored as JSON in the draft
+# so the AI sees the complete context on every call and can make a genuinely
+# informed decision about what to ask next or whether it has enough info.
+#
+# Flow:
+#   1. Frontend submits title + description  -> POST /api/ai/chat (no prior_answer)
+#   2. AI returns a question OR done=true
+#   3. Frontend shows the question, user answers -> POST /api/ai/chat (with prior_answer)
+#   4. Repeat until done=true (max 3 questions total)
+#   5. Frontend calls POST /api/ai/finalize to write the final ticket
+# =============================================================================
 
-    This is intentionally simple and can be tuned based on real user behavior.
-    """
-    d = (description or "").strip().lower()
-    too_short = len(d) < 300
-    too_short = len(d) < 300
-    generic_phrases = any(p in d for p in [
-        "cant login", "can't login", "cannot login", "login problem",
-        "problem with the internet", "internet problem",
-        "doesn't work", "not working", "help",
-    ])
-    return too_short or generic_phrases
+SYSTEM_PROMPT = """You are an IT helpdesk triage assistant. Your job is to decide
+whether a support ticket has enough information, and if not, ask for what is missing.
+The ticket can be IT-related problems, or it can be a request for an item or product.
+Make sure you prefer multiple choice options.
 
-def generate_followup_questions(title: str, description: str) -> dict:
-    """
-    Ask the OpenAI model to generate a small set of follow-up questions.
+If it is an IT-related problem, the ticket is complete when ALL THREE of the following are clearly answered:
+  A) WHERE exactly is the problem? (network, hardware, software, email -
+     NOT just "a problem" or "it doesn't work")
+  B) WHEN does it happen? (since when, how often, what were you doing -
+     "since when is" the most important)
+  C) WHAT has the user already tried? (restarted, reinstalled, checked cables, etc.
+     - "I haven't tried anything" is a perfectly acceptable answer for C)
 
-    Output is forced into a strict JSON schema so the frontend can render it reliably.
+If it is a request for an item/product, the ticket is complete when you know what the item is.     
 
-    Returns:
-      dict like:
-        {
-          "questions": [
-            {"id": "...", "type": "...", "question": "...", "choices": [...], "required": true},
-            ...
-          ]
-        }
-    """
-    schema = {
-        "name": "followup_questions",
-        "schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "questions": {
-                    "type": "array",
-                    "minItems": 3,
-                    "maxItems": 7,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            # id lets the frontend map answers back to the right question.
-                            "id": {"type": "string"},
-                            # question "type" controls how the frontend renders the UI.
-                            "type": {"type": "string", "enum": ["yes_no", "multiple_choice", "free_text"]},
-                            "question": {"type": "string"},
-                            # Always present. For yes_no/free_text it must be [] (empty array).
-                            "choices": {"type": "array", "items": {"type": "string"}},
-                            "required": {"type": "boolean"}
-                        },
-                        "required": ["id", "type", "question", "choices", "required"]
-                    }
-                }
-            },
-            "required": ["questions"]
-        }
-    }
+You will be given the ticket description and the conversation history so far.
 
-    try:
-        # Using the Responses API with JSON Schema output enforcement.
-        # Temperature is low to reduce randomness.
-        resp = client.responses.create(
-            model="gpt-4.1-mini",
-            input=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an IT helpdesk triage assistant. "
-                        "Ask the minimum number of targeted follow-up questions to diagnose the issue. "
-                        "Prefer multiple-choice when possible. Never ask for passwords or sensitive secrets. "
-                        "Always include a 'choices' array in each question. "
-                        "If the question is not multiple-choice, set choices to an empty array."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": f"Title: {title}\nDescription: {description}\nReturn follow-up questions."
-                }
-            ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": schema["name"],
-                    "schema": schema["schema"],
-                    "strict": True
-                }
-            },
-            temperature=0.2,
-        )
+First, carefully check whether the description ALREADY answers A, B, and C.
+If the description is detailed and specific, set done=true immediately — do NOT ask
+questions just for the sake of asking them.
 
-        # `resp.output_text` is expected to be JSON because of json_schema formatting.
-        return json.loads(resp.output_text)
+Respond ONLY with valid JSON in exactly this format:
+{
+  "done": false,
+  "question": "Your question text here",
+  "type": "multiple_choice",
+  "choices": ["Option 1", "Option 2", "Option 3"]
+}
 
-    except Exception as e:
-        # Raise a clear error up to the route handler.
-        raise RuntimeError(f"OpenAI followups failed: {e}")
+OR when the ticket is complete:
+{
+  "done": true,
+  "question": null,
+  "type": null,
+  "choices": []
+}
+
+Rules:
+- Evaluate the FULL description first. If A, B, and C are all clearly answered, set done=true.
+- Only set done=false if at least one criterion is genuinely missing or too vague to act on.
+- A single word or vague phrase does NOT satisfy a criterion. "Network" does not satisfy A —
+  you need to know specifically what the network problem is.
+- Only ask ONE question per turn, targeting the single most important missing criterion.
+- Use multiple_choice when the answer space is predictable (strongly preferred).
+- Use free_text only when the answer cannot be predicted.
+- Never ask for passwords or sensitive information.
+- Maximum 3 questions total. After 3 questions, always set done=true.
+"""
+
 
 def improve_ticket_description(title: str, original_description: str, answers: dict) -> dict:
     """
-    Produce the final "improved" ticket from the original description + follow-up answers.
-
-    Returns a structured dict including:
-      - improved_description: rewritten final description
-      - category_guess: a best-effort category label
-      - urgency_guess: low/medium/high
-      - missing_info: list of remaining info gaps
+    Produce the final improved ticket from the original description + conversation answers.
+    Returns: { improved_description, category_guess, urgency_guess, missing_info }
     """
     schema = {
         "name": "final_ticket",
@@ -310,7 +268,6 @@ def improve_ticket_description(title: str, original_description: str, answers: d
             "required": ["improved_description", "category_guess", "urgency_guess", "missing_info"]
         }
     }
-
     try:
         resp = client.responses.create(
             model="gpt-4.1-mini",
@@ -327,7 +284,7 @@ def improve_ticket_description(title: str, original_description: str, answers: d
                     "content": (
                         f"Title: {title}\n"
                         f"Original description:\n{original_description}\n\n"
-                        f"Follow-up answers JSON:\n{json.dumps(answers, ensure_ascii=False)}\n\n"
+                        f"Follow-up Q&A:\n{json.dumps(answers, ensure_ascii=False)}\n\n"
                         "Produce the final structured result."
                     )
                 }
@@ -343,54 +300,115 @@ def improve_ticket_description(title: str, original_description: str, answers: d
             temperature=0.2,
         )
         return json.loads(resp.output_text)
-
     except Exception as e:
         raise RuntimeError(f"OpenAI finalize failed: {e}")
 
 
-# Routes
+def ai_chat_turn(title: str, description: str, conversation: list, questions_asked: int) -> dict:
+    """
+    Run one turn of the triage conversation.
 
-@app.get("/api/ping")
+    Args:
+        title: ticket title/category
+        description: original user description
+        conversation: list of {"question": ..., "answer": ...} dicts from previous turns
+        questions_asked: how many questions have already been asked
+
+    Returns:
+        dict with keys: done (bool), question (str|None), type (str|None), choices (list)
+    """
+    # Build the user message showing full context
+    context_parts = [
+        f"Ticket category: {title}",
+        f"User description: {description}",
+    ]
+
+    if conversation:
+        context_parts.append("\nConversation so far:")
+        for i, turn in enumerate(conversation, 1):
+            context_parts.append(f"  Q{i}: {turn['question']}")
+            context_parts.append(f"  A{i}: {turn['answer']}")
+
+    if questions_asked >= 3:
+        context_parts.append("\nYou have already asked 3 questions. You MUST set done=true now.")
+    else:
+        remaining = 3 - questions_asked
+        context_parts.append(f"\nYou may ask at most {remaining} more question(s).")
+        context_parts.append("Check criteria A, B, C. If all are satisfied, set done=true. Otherwise ask the most important missing question.")
+
+    user_message = "\n".join(context_parts)
+
+    try:
+        resp = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_message}
+            ],
+            text={"format": {"type": "text"}},
+            temperature=0.2,
+        )
+
+        raw = resp.output_text.strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1]
+            raw = raw.rsplit("```", 1)[0].strip()
+
+        result = json.loads(raw)
+
+        # Validate and normalise the response
+        done = bool(result.get("done", False))
+        question = result.get("question") or None
+        qtype = result.get("type") or "free_text"
+        choices = result.get("choices") or []
+
+        if done:
+            return {"done": True, "question": None, "type": None, "choices": []}
+
+        if not question:
+            # AI returned done=false but no question — treat as done to avoid infinite loop
+            return {"done": True, "question": None, "type": None, "choices": []}
+
+        return {"done": False, "question": question, "type": qtype, "choices": choices}
+
+    except Exception as e:
+        raise RuntimeError(f"AI chat turn failed: {e}")
+
+
+# =============================================================================
+# ROUTES
+# =============================================================================
+
 @app.get("/api/ping")
 def ping():
     """Health check endpoint: returns {"ok": true} if the server is running."""
     return jsonify({"ok": True})
 
+
 @app.post("/api/draft/start")
 def start_draft():
     """
     Start (or reset) a draft session for a user.
-
-    Expected JSON body:
-      { "user_id": 1 }
-
-    Behavior:
-    - Creates a new row in ticket_drafts if it doesn't exist.
-    - If it already exists, resets it back to a fresh 'draft' state.
-    - Clears any previous stored title/description/questions/answers for that user.
+    Body: { "user_id": 1, "table": 1 }
     """
     data = request.get_json(force=True)
     user_id = data.get("user_id")
     table_choice = data.get("table")
 
-    # validate table choice (1-5); default to 1
     try:
         table_choice = int(table_choice) if table_choice is not None else 1
     except Exception:
-        raise ValueError("table must be an integer between 1 and 5")    
+        return jsonify({"error": "table must be an integer between 1 and 5"}), 400
     if table_choice < 1 or table_choice > 5:
         return jsonify({"error": "table must be integer between 1 and 5"}), 400
 
-    # Restricting user_id to 1..99 keeps this demo app simple for testing
     if not isinstance(user_id, int) or not (1 <= user_id <= 99):
         return jsonify({"error": "user_id must be an integer between 1 and 99"}), 400
 
     conn = get_conn()
     t = now_s()
 
-    # "Upsert" behavior:
-    # - INSERT a new draft row for this user
-    # - OR if user_id already exists, overwrite/reset that row to a new draft state
     conn.execute(
         """
         INSERT INTO ticket_drafts (
@@ -415,22 +433,14 @@ def start_draft():
     conn.close()
     return jsonify({"user_id": user_id})
 
-@app.post("/api/tickets")
+
 @app.post("/api/tickets")
 def create_ticket():
     """
-    Submit a ticket WITHOUT using AI follow-ups.
-
-    Expected JSON body:
-      { "user_id": 1, "title": "Printer issue", "description": "..." }
-
-    Important:
-    - This endpoint requires that a draft exists in state='draft'.
-      The intended UI flow is: user clicks Confirm -> /api/draft/start, then submits.
-    - This endpoint always stores ai_used = 0.
+    Submit a ticket WITHOUT AI (description was already detailed enough).
+    Body: { "user_id": 1, "title": "...", "description": "..." }
     """
     data = request.get_json(force=True)
-
     user_id = data.get("user_id")
     title = (data.get("title") or "").strip()
     description = (data.get("description") or "").strip()
@@ -442,7 +452,6 @@ def create_ticket():
 
     conn = get_conn()
 
-    # Ensure there is an active draft (prevents submitting without starting the flow).
     draft = conn.execute(
         "SELECT * FROM ticket_drafts WHERE user_id = ? AND state = 'draft'",
         (user_id,)
@@ -455,7 +464,6 @@ def create_ticket():
     created_at = now_s()
     time_spent = created_at - draft["started_at"]
 
-    # Determine which tickets table to use (tickets_1 .. tickets_5)
     tbl_idx = draft["log_table"]
     try:
         tbl_idx = int(tbl_idx)
@@ -470,7 +478,6 @@ def create_ticket():
         (user_id, title, description, time_spent)
     )
 
-    # Mark the draft as submitted so it can't be reused accidentally.
     conn.execute(
         "UPDATE ticket_drafts SET state='submitted', submitted_at=? WHERE user_id=?",
         (created_at, user_id)
@@ -478,72 +485,54 @@ def create_ticket():
 
     conn.commit()
     conn.close()
-    return jsonify({"user_id": user_id, "time_to_submit_ms": time_spent}), 201
+    return jsonify({"user_id": user_id, "time_to_submit_ms": time_spent, "log_table": tbl_idx}), 201
 
-@app.get("/api/tickets")
+
 @app.get("/api/tickets")
 def list_tickets():
-    """
-    List the most recent tickets (up to 100).
-
-    Returns an array like:
-      [
-        { "user_id": 1, "title": "...", "created_at": ..., "time_to_submit_ms": ..., "status": "open" },
-        ...
-      ]
-    """
+    """List the most recent tickets (up to 100) from all tables."""
     conn = get_conn()
-    # Aggregate tickets from all five tables
     rows = conn.execute(
         """
         SELECT user_id, title, time_to_submit_ms, status FROM tickets_1
-        UNION ALL
-        SELECT user_id, title, time_to_submit_ms, status FROM tickets_2
-        UNION ALL
-        SELECT user_id, title, time_to_submit_ms, status FROM tickets_3
-        UNION ALL
-        SELECT user_id, title, time_to_submit_ms, status FROM tickets_4
-        UNION ALL
-        SELECT user_id, title, time_to_submit_ms, status FROM tickets_5
-        ORDER BY user_id DESC
-        LIMIT 100
+        UNION ALL SELECT user_id, title, time_to_submit_ms, status FROM tickets_2
+        UNION ALL SELECT user_id, title, time_to_submit_ms, status FROM tickets_3
+        UNION ALL SELECT user_id, title, time_to_submit_ms, status FROM tickets_4
+        UNION ALL SELECT user_id, title, time_to_submit_ms, status FROM tickets_5
+        ORDER BY user_id DESC LIMIT 100
         """
     ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
-@app.post("/api/ai/followups")
-def ai_followups():
+
+@app.post("/api/ai/chat")
+def ai_chat():
     """
-    Decide if we need follow-up questions, and if so generate them via OpenAI.
+    Single endpoint that drives the entire triage conversation.
 
-    Expected JSON body:
-      { "user_id": 1, "title": "Can't login", "description": "..." }
+    First call (no prior_answer):
+      Body: { "user_id": 1, "title": "...", "description": "..." }
 
-    Flow:
-    1) Validate user + require an active draft.
-    2) Save the user's title/description into the draft table (so finalize can use it).
-    3) If description is already detailed enough -> return needs_followup=false
-    4) Otherwise call OpenAI to generate questions, store them, return them to frontend.
+    Subsequent calls (after user answers a question):
+      Body: { "user_id": 1, "prior_answer": "user's answer to the last question" }
 
-    Response examples:
-      { "needs_followup": false }
+    Response:
+      { "done": false, "question": "...", "type": "multiple_choice", "choices": [...] }
     or
-      { "needs_followup": true, "questions": [ ... ] }
+      { "done": true }  -> frontend should call /api/ai/finalize next
     """
     data = request.get_json(force=True)
     user_id = data.get("user_id")
+    prior_answer = (data.get("prior_answer") or "").strip()
     title = (data.get("title") or "").strip()
     description = (data.get("description") or "").strip()
 
     if not isinstance(user_id, int) or not (1 <= user_id <= 99):
         return jsonify({"error": "user_id must be an integer between 1 and 99"}), 400
-    if not title or not description:
-        return jsonify({"error": "title and description required"}), 400
 
     conn = get_conn()
 
-    # Must have an active draft for the current user.
     draft = conn.execute(
         "SELECT * FROM ticket_drafts WHERE user_id=? AND state='draft'",
         (user_id,)
@@ -551,84 +540,87 @@ def ai_followups():
 
     if not draft:
         conn.close()
-        return jsonify({"error": "No active draft for this user. Click Confirm first."}), 400
+        return jsonify({"error": "No active draft. Click Confirm first."}), 400
 
-    # Persist what the user typed into the draft so /ai/finalize can use it later.
-    conn.execute(
-        "UPDATE ticket_drafts SET draft_title=?, draft_description=? WHERE user_id=?",
-        (title, description, user_id)
-    )
-    conn.commit()
+    # --- First call: save title + description, start fresh conversation ---
+    if title and description:
+        conn.execute(
+            "UPDATE ticket_drafts SET draft_title=?, draft_description=?, ai_questions_json=? WHERE user_id=?",
+            (title, description, json.dumps([]), user_id)
+        )
+        conn.commit()
+        conversation = []
+        current_title = title
+        current_description = description
+    else:
+        # --- Subsequent call: load saved state and append prior answer ---
+        current_title = draft["draft_title"] or ""
+        current_description = draft["draft_description"] or ""
 
-    # If the description looks sufficiently detailed, skip AI questions.
-    if not should_ask_followups(description):
-        conn.close()
-        return jsonify({"needs_followup": False})
+        if not current_title or not current_description:
+            conn.close()
+            return jsonify({"error": "No draft content found. Submit the form first."}), 400
 
-    # Generate follow-up questions from OpenAI.
+        conversation = json.loads(draft["ai_questions_json"] or "[]")
+
+        # The last entry in conversation has no answer yet — fill it in
+        if conversation and prior_answer and "answer" not in conversation[-1]:
+            conversation[-1]["answer"] = prior_answer
+            conn.execute(
+                "UPDATE ticket_drafts SET ai_questions_json=? WHERE user_id=?",
+                (json.dumps(conversation), user_id)
+            )
+            conn.commit()
+
+    questions_asked = len([t for t in conversation if "answer" in t])
+
+    # Ask the AI what to do next
     try:
-        q = generate_followup_questions(title, description)
+        result = ai_chat_turn(current_title, current_description, conversation, questions_asked)
     except Exception as e:
         conn.close()
-        # 502 indicates a bad gateway / upstream error (OpenAI in this case).
         return jsonify({"error": str(e)}), 502
 
-    # Store questions in the draft and track that we used AI (ai_turns++ for analytics/debugging).
-    conn.execute(
-        """
-        UPDATE ticket_drafts
-        SET ai_questions_json=?,
-            ai_turns=ai_turns+1
-        WHERE user_id=?
-        """,
-        (json.dumps(q, ensure_ascii=False), user_id)
-    )
+    if result["done"]:
+        conn.execute(
+            "UPDATE ticket_drafts SET ai_turns=ai_turns+1 WHERE user_id=?",
+            (user_id,)
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"done": True})
 
+    # Save the new question (without answer yet) to the conversation
+    conversation.append({"question": result["question"]})
+    conn.execute(
+        "UPDATE ticket_drafts SET ai_questions_json=?, ai_turns=ai_turns+1 WHERE user_id=?",
+        (json.dumps(conversation), user_id)
+    )
     conn.commit()
     conn.close()
 
-    # Return only the "questions" list to keep frontend simpler.
-    return jsonify({"needs_followup": True, "questions": q["questions"]})
+    return jsonify({
+        "done": False,
+        "question": result["question"],
+        "type": result["type"],
+        "choices": result["choices"]
+    })
+
 
 @app.post("/api/ai/finalize")
 def ai_finalize():
     """
-    Finalize a ticket using the AI follow-up answers.
-
-    Expected JSON body:
-      { "user_id": 1, "answers": { "<question_id>": "<answer>", ... } }
-
-    Flow:
-    1) Validate user + answers.
-    2) Load the current draft (must exist and have saved title/description).
-    3) Call OpenAI to produce an improved description + metadata.
-    4) Insert ticket with ai_used=1.
-    5) Mark draft as submitted and store answers JSON for audit/debug.
-
-    Response:
-      {
-        "user_id": 1,
-        "time_to_submit_ms": ...,
-        "final": {
-          "improved_description": "...",
-          "category_guess": "...",
-          "urgency_guess": "low|medium|high",
-          "missing_info": [...]
-        }
-      }
+    Build the final improved ticket from the full conversation and submit it.
+    Body: { "user_id": 1 }
     """
     data = request.get_json(force=True)
     user_id = data.get("user_id")
-    answers = data.get("answers") or {}
 
     if not isinstance(user_id, int) or not (1 <= user_id <= 99):
         return jsonify({"error": "user_id must be an integer between 1 and 99"}), 400
-    if not isinstance(answers, dict) or not answers:
-        return jsonify({"error": "answers must be a non-empty object"}), 400
 
     conn = get_conn()
 
-    # Load the draft and ensure it contains the user's original title/description.
     draft = conn.execute(
         "SELECT * FROM ticket_drafts WHERE user_id=? AND state='draft'",
         (user_id,)
@@ -636,12 +628,19 @@ def ai_finalize():
 
     if not draft or not draft["draft_title"] or not draft["draft_description"]:
         conn.close()
-        return jsonify({"error": "No draft content found. Submit the form first."}), 400
+        return jsonify({"error": "No draft content found."}), 400
 
     title = draft["draft_title"]
     original_description = draft["draft_description"]
+    conversation = json.loads(draft["ai_questions_json"] or "[]")
 
-    # Ask OpenAI to rewrite the ticket + add metadata.
+    # Build answers dict for improve_ticket_description (keyed by question text)
+    answers = {
+        f"q{i+1}": f"Q: {t.get('question','')} A: {t.get('answer','(no answer)')}"
+        for i, t in enumerate(conversation)
+        if "answer" in t
+    }
+
     try:
         final = improve_ticket_description(title, original_description, answers)
     except Exception as e:
@@ -649,11 +648,9 @@ def ai_finalize():
         return jsonify({"error": str(e)}), 502
 
     improved_description = final["improved_description"]
-
     created_at = now_s()
     time_spent = created_at - draft["started_at"]
 
-    # Insert into the same chosen tickets_N table as the draft
     tbl_idx = draft["log_table"] or 1
     try:
         tbl_idx = int(tbl_idx)
@@ -668,17 +665,13 @@ def ai_finalize():
         (user_id, title, improved_description, time_spent)
     )
 
-    # Mark the draft as submitted and store the answers for traceability.
     conn.execute(
         """
         UPDATE ticket_drafts
-        SET state='submitted',
-            ai_answers_json=?,
-            ai_turns=ai_turns+1,
-            submitted_at=?
+        SET state='submitted', ai_answers_json=?, ai_turns=ai_turns+1, submitted_at=?
         WHERE user_id=?
         """,
-        (json.dumps(answers, ensure_ascii=False), created_at, user_id)
+        (json.dumps(answers), created_at, user_id)
     )
 
     conn.commit()
@@ -687,6 +680,7 @@ def ai_finalize():
     return jsonify({
         "user_id": user_id,
         "time_to_submit_ms": time_spent,
+        "log_table": tbl_idx,
         "final": final
     }), 201
 

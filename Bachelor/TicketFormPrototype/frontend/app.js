@@ -2,7 +2,6 @@ let userId = null;
 let confirmed = false;
 
 function parseUserId(username) {
-  // Accept "user3", "User3", "USER3"
   const m = username.trim().toLowerCase().match(/^user(\d{1,2})$/);
   if (!m) return null;
   const id = Number(m[1]);
@@ -23,7 +22,6 @@ async function confirmUser() {
   }
 
   try {
-    // Start server-side timer (draft) only after confirm
     const tableSelect = document.getElementById("tableSelect");
     const tableChoice = Number(tableSelect ? tableSelect.value : 1);
 
@@ -52,6 +50,13 @@ async function confirmUser() {
   }
 }
 
+function askQuestion(questionText, type, choices) {
+  if (type === "multiple_choice" && Array.isArray(choices) && choices.length > 0) {
+    return prompt(`${questionText}\n\nValg:\n- ${choices.join("\n- ")}`) || "";
+  }
+  return prompt(questionText) || "";
+}
+
 async function submitForm() {
   try {
     if (!confirmed || !userId) {
@@ -73,66 +78,52 @@ async function submitForm() {
 
     const title = inquiry;
     const description = `Kategori: ${inquiry}\n\n${desc}`;
-    
 
-    // 1) Ask backend if we need followups
-    const followRes = await fetch("http://127.0.0.1:5000/api/ai/followups", {
+    // Step 1: Start the AI conversation with title + description
+    let chatRes = await fetch("http://127.0.0.1:5000/api/ai/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: userId, title, description })
     });
 
-    const followData = await followRes.json();
-    if (!followRes.ok) throw new Error(followData.error || "Failed followups");
+    let chatData = await chatRes.json();
+    if (!chatRes.ok) throw new Error(chatData.error || "Failed to start AI chat");
 
-    if (!followData.needs_followup) {
-      // 2) No followups -> submit normally
-      const res = await fetch("http://127.0.0.1:5000/api/tickets", {
+    // Step 2: Loop — show each question until AI says done
+    while (!chatData.done) {
+      const answer = askQuestion(chatData.question, chatData.type, chatData.choices);
+
+      chatRes = await fetch("http://127.0.0.1:5000/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId, title, description })
+        body: JSON.stringify({ user_id: userId, prior_answer: answer })
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to submit ticket");
-
-      alert(`Ticket sendt!\nTid brukt: ${data.time_to_submit_ms} s`);
-    } else {
-      // 3) Followups -> collect answers -> finalize
-      const answers = {};
-      for (const q of followData.questions) {
-        let answer = "";
-        if (q.type === "multiple_choice" && Array.isArray(q.choices) && q.choices.length) {
-          answer = prompt(`${q.question}\nValg:\n- ${q.choices.join("\n- ")}`) || "";
-        } else {
-          answer = prompt(q.question) || "";
-        }
-        answers[q.id] = answer.trim();
-      }
-
-      const finRes = await fetch("http://127.0.0.1:5000/api/ai/finalize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId, answers })
-      });
-
-      const finData = await finRes.json();
-      if (!finRes.ok) throw new Error(finData.error || "Failed finalize");
-
-      alert(`Ticket sendt (AI forbedret)!\nTid brukt: ${finData.time_to_submit_ms} s\nData sendt til Tabell: ${finData.log_table}`);
-      console.log("AI final:", finData.final);
+      chatData = await chatRes.json();
+      if (!chatRes.ok) throw new Error(chatData.error || "Failed AI chat turn");
     }
 
-    // Reset AFTER successful submission (both paths)
+    // Step 3: AI is satisfied — finalize and submit
+    const finRes = await fetch("http://127.0.0.1:5000/api/ai/finalize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId })
+    });
+
+    const finData = await finRes.json();
+    if (!finRes.ok) throw new Error(finData.error || "Failed to finalize ticket");
+
+    alert(`Ticket sendt (AI forbedret)!\nTid brukt: ${finData.time_to_submit_ms} s\nData sendt til Tabell: ${finData.log_table}`);
+    console.log("AI final:", finData.final);
+
+    // Reset form
     confirmed = false;
     userId = null;
     document.getElementById("submitBtn").disabled = true;
     document.getElementById("userStatus").textContent = "Bekreft bruker for å starte ny timer.";
-   
 
   } catch (err) {
     console.error(err);
     alert("Noe gikk galt: " + err.message);
   }
 }
-
