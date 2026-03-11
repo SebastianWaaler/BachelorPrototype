@@ -94,14 +94,11 @@ def init_db(): #Creates the tables
     CREATE TABLE IF NOT EXISTS ticket_drafts (
       user_id INTEGER PRIMARY KEY,
       started_at INTEGER NOT NULL,
-      user_id INTEGER PRIMARY KEY,
-      started_at INTEGER NOT NULL,
       last_activity_at INTEGER NOT NULL,
       ai_turns INTEGER DEFAULT 0,
-                        state TEXT NOT NULL CHECK (state IN ('draft','submitted','abandoned')),
-                        started_at INTEGER,
-                        submitted_at INTEGER,
-                        log_table INTEGER
+      state TEXT NOT NULL CHECK (state IN ('draft','submitted','abandoned')),
+      submitted_at INTEGER,
+      log_table INTEGER
     );
 
         -- Create five separate ticket tables (users choose one when starting a draft)
@@ -174,10 +171,23 @@ def init_db(): #Creates the tables
 
     if "started_at" not in cols:
         add_col("ALTER TABLE ticket_drafts ADD COLUMN started_at INTEGER;")
+    if "last_activity_at" not in cols:
+        add_col("ALTER TABLE ticket_drafts ADD COLUMN last_activity_at INTEGER;")
     if "submitted_at" not in cols:
         add_col("ALTER TABLE ticket_drafts ADD COLUMN submitted_at INTEGER;")
     if "log_table" not in cols:
         add_col("ALTER TABLE ticket_drafts ADD COLUMN log_table INTEGER;")
+
+    # Backfill timestamps for older databases so inserts/updates don't fail on NULL values.
+    conn.execute(
+        """
+        UPDATE ticket_drafts
+        SET last_activity_at = COALESCE(last_activity_at, started_at, ?)
+        WHERE last_activity_at IS NULL
+        """,
+        (now_s(),)
+    )
+    conn.commit()
 
     conn.close()
 
@@ -395,9 +405,9 @@ def start_draft():
         """
         INSERT INTO ticket_drafts (
             user_id, state,
-            draft_title, draft_description, ai_questions_json, ai_answers_json, ai_turns, started_at, log_table
+            draft_title, draft_description, ai_questions_json, ai_answers_json, ai_turns, started_at, last_activity_at, log_table
         )
-        VALUES (?, 'draft', NULL, NULL, NULL, NULL, 0, ?, ?)
+        VALUES (?, 'draft', NULL, NULL, NULL, NULL, 0, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             state = 'draft',
             draft_title = NULL,
@@ -406,9 +416,10 @@ def start_draft():
             ai_answers_json = NULL,
             ai_turns = 0,
             started_at = excluded.started_at,
+            last_activity_at = excluded.last_activity_at,
             log_table = excluded.log_table
         """,
-        (user_id, t, table_choice)
+        (user_id, t, t, table_choice)
     )
 
     conn.commit()
