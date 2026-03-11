@@ -8,72 +8,81 @@
 </head>
 <body>
     
-    <header>
-        <div class="header" id="myHeader">
-            <h1>Ticket Form</h1>
-        </div> 
-    </header>
-    
-    <div class="bodyContainer">
-        <div class="menu"></div>
-        <div class="main">
-            <div class="container">
-                <div class="div1">
-                    <p>Bruk dette skjemaet dersom forespørselen din ikke faller inn under kategoriene i de andre bestillingsskjemaene.</p>
-                    <p><b>Viktig:</b> Hvis du har et problem og ønsker å rapportere en hendelse, venligst bruk skjemaet som er lenker her</p>
-                    <p>Dette skjemaet skal brukes for forespørsler.
-                        Eksempler på forespørsler er:
-                        <ul>
-                            <li>Gjennoppretting av dokument</li>
-                            <li>Tilbakestilling av passord</li>
-                            <li>Forespørsel om IT-utstyr</li>
-                            <li>Tilgang til applikasjoner (skjema)</li>
-                        </ul>
-                    </p>
-                    <p><b id="warning">Advarsel:</b> Ikke skriv sensitiv informasjon her</p>
-                </div>
-                <div class="div2">
-                    <label for="username">*Brukernavn</label><br>
-                    <input type="text" id="username" name="username" placeholder="user1 - user99">
+<header>
+    <div class="header" id="myHeader">
+        <h1>Ticket Form</h1>
+    </div> 
+</header>
 
-                    <label for="tableSelect">Velg loggtabell:</label>
-                    <select id="tableSelect">
-                        <option value="1">Tabell 1</option>
-                        <option value="2">Tabell 2</option>
-                        <option value="3">Tabell 3</option>
-                        <option value="4">Tabell 4</option>
-                        <option value="5">Tabell 5</option>
-                    </select>
+<div class="bodyContainer">
+    <div class="menu"></div>
 
-                    <button type="button" onclick="confirmUser()">Confirm</button>
-                    <p id="userStatus"></p>
-                </div>
+    <div class="main">
+        <div class="container">
 
+            <div class="div1">
+                <p>Bruk dette skjemaet dersom forespørselen din ikke faller inn under kategoriene i de andre bestillingsskjemaene.</p>
+                <p><b>Viktig:</b> Hvis du har et problem og ønsker å rapportere en hendelse, venligst bruk skjemaet som er lenker her</p>
 
-                <div class="div3">
-                    <label for="inquiry">*Hva gjelder henvendelsen din?</label><br>
-                    <select id="inquiry">
-                        <option>-- Velg --</option>
-                        <option value="Teknisk støtte">Teknisk støtte</option>
-                        <option value="Innlogging">Innlogging og passord</option>
-                        <option value="Veiledning">Veiledning</option>
-                        <option value="Annet">Annet</option>
-                    </select>
-                </div>
+                <p>Dette skjemaet skal brukes for forespørsler.</p>
+                <p>Eksempler på forespørsler er:</p>
+                <ul>
+                    <li>Gjennoppretting av dokument</li>
+                    <li>Tilbakestilling av passord</li>
+                    <li>Forespørsel om IT-utstyr</li>
+                    <li>Tilgang til applikasjoner (skjema)</li>
+                </ul>
 
-                <div class="div4"> 
-                    <label for="Description">*Kort beskrivelse</label><br>
-                    <textarea id="Description"></textarea>
-                </div>
+                <p><b id="warning">Advarsel:</b> Ikke skriv sensitiv informasjon her</p>
+            </div>
 
-                <div class="div5"> 
-                    <button type="button" onclick="submitForm()" id="submitBtn" disabled>Send inn</button>
-                </div>
+            <div class="div2">
+                <label for="username">*Brukernavn</label><br>
+                <input type="text" id="username" name="username" placeholder="user1 - user99">
+
+                <label for="tableSelect">Velg loggtabell:</label>
+                <select id="tableSelect">
+                    <option value="1">Tabell 1</option>
+                    <option value="2">Tabell 2</option>
+                    <option value="3">Tabell 3</option>
+                    <option value="4">Tabell 4</option>
+                    <option value="5">Tabell 5</option>
+                </select>
+
+                <button type="button" onclick="confirmUser()">Confirm</button>
+                <p id="userStatus"></p>
+            </div>
+
+            <div class="div3">
+                <label for="inquiry">*Hva gjelder henvendelsen din?</label><br>
+                <select id="inquiry">
+                    <option>-- Velg --</option>
+                    <option value="Teknisk støtte">Teknisk støtte</option>
+                    <option value="Innlogging">Innlogging og passord</option>
+                    <option value="Veiledning">Veiledning</option>
+                    <option value="Annet">Annet</option>
+                </select>
+                <div id="inquiryError" class="field-error"></div>
+            </div>
+
+            <div class="div4"> 
+                <label for="Description">*Kort beskrivelse</label><br>
+                <textarea id="Description" rows="3" placeholder="F.eks: Internett fungerer ikke på kontoret"></textarea>
+                <div id="DescriptionError" class="field-error"></div>
+
+                <label for="LongDescription">*Detaljert beskrivelse</label><br>
+                <textarea id="LongDescription" rows="6" placeholder="Beskriv hva som skjer, når det startet, feilmeldinger osv."></textarea><br>
+                <div id="LongDescriptionError" class="field-error"></div>
+                <button type="button" onclick="submitForm()" id="submitBtn" disabled>Send inn</button>
+
+                
             </div>
         </div>
-        <div class="fodder"></div>
     </div>
 
-    <script src="./app.js"></script>
+    <div class="fodder"></div>
+</div>
+
+<script src="./app.js"></script>
 </body>
 </html>
