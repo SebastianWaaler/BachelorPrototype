@@ -12,7 +12,6 @@ function parseUserId(username) {
 function setFieldError(fieldId, message) {
   const field = document.getElementById(fieldId);
   const error = document.getElementById(`${fieldId}Error`);
-
   if (field) field.classList.add("input-error");
   if (error) error.textContent = message;
 }
@@ -20,7 +19,6 @@ function setFieldError(fieldId, message) {
 function clearFieldError(fieldId) {
   const field = document.getElementById(fieldId);
   const error = document.getElementById(`${fieldId}Error`);
-
   if (field) field.classList.remove("input-error");
   if (error) error.textContent = "";
 }
@@ -64,25 +62,17 @@ function attachLiveValidation() {
 
   if (inquiry) {
     inquiry.addEventListener("change", () => {
-      if (inquiry.value && inquiry.value !== "-- Velg --") {
-        clearFieldError("inquiry");
-      }
+      if (inquiry.value && inquiry.value !== "-- Velg --") clearFieldError("inquiry");
     });
   }
-
   if (shortDesc) {
     shortDesc.addEventListener("input", () => {
-      if (shortDesc.value.trim()) {
-        clearFieldError("Description");
-      }
+      if (shortDesc.value.trim()) clearFieldError("Description");
     });
   }
-
   if (longDesc) {
     longDesc.addEventListener("input", () => {
-      if (longDesc.value.trim()) {
-        clearFieldError("LongDescription");
-      }
+      if (longDesc.value.trim()) clearFieldError("LongDescription");
     });
   }
 }
@@ -118,11 +108,19 @@ async function confirmUser() {
     status.textContent = `Bekreftet: user${userId}. Timer startet.`;
     status.style.color = "green";
     submitBtn.disabled = false;
+
   } catch (err) {
     console.error(err);
     status.textContent = "Kunne ikke starte timer: " + err.message;
     status.style.color = "red";
   }
+}
+
+function askQuestion(questionText, type, choices) {
+  if (type === "multiple_choice" && Array.isArray(choices) && choices.length > 0) {
+    return prompt(`${questionText}\n\nValg:\n- ${choices.join("\n- ")}`) || "";
+  }
+  return prompt(questionText) || "";
 }
 
 async function submitForm() {
@@ -132,16 +130,13 @@ async function submitForm() {
       return;
     }
 
-    if (!validateForm()) {
-      return;
-    }
+    if (!validateForm()) return;
 
     const inquiry = document.getElementById("inquiry").value;
     const shortDesc = document.getElementById("Description").value.trim();
     const longDesc = document.getElementById("LongDescription").value.trim();
 
     const title = shortDesc;
-
     const description =
 `Kategori: ${inquiry}
 Kort beskrivelse: ${shortDesc}
@@ -149,67 +144,53 @@ Kort beskrivelse: ${shortDesc}
 Detaljert beskrivelse:
 ${longDesc}`;
 
-    const followRes = await fetch("http://127.0.0.1:5000/api/ai/followups", {
+    // Step 1: Start the AI conversation with title + description
+    let chatRes = await fetch("http://127.0.0.1:5000/api/ai/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: userId, title, description })
     });
 
-    const followData = await followRes.json();
-    if (!followRes.ok) throw new Error(followData.error || "Failed followups");
+    let chatData = await chatRes.json();
+    if (!chatRes.ok) throw new Error(chatData.error || "Failed to start AI chat");
 
-    if (!followData.needs_followup) {
-      const res = await fetch("http://127.0.0.1:5000/api/tickets", {
+    // Step 2: Loop — show each question until AI says done
+    while (!chatData.done) {
+      const answer = askQuestion(chatData.question, chatData.type, chatData.choices);
+
+      chatRes = await fetch("http://127.0.0.1:5000/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId, title, description })
+        body: JSON.stringify({ user_id: userId, prior_answer: answer })
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to submit ticket");
-
-      alert(`Ticket sendt!\nTid brukt: ${data.time_to_submit_ms} ms`);
-    } else {
-      const answers = {};
-
-      for (const q of followData.questions) {
-        let answer = "";
-
-        if (q.type === "multiple_choice" && q.choices?.length) {
-          answer = prompt(`${q.question}\nValg:\n- ${q.choices.join("\n- ")}`) || "";
-        } else {
-          answer = prompt(q.question) || "";
-        }
-
-        answers[q.id] = answer.trim();
-      }
-
-      const finRes = await fetch("http://127.0.0.1:5000/api/ai/finalize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId, answers })
-      });
-
-      const finData = await finRes.json();
-      if (!finRes.ok) throw new Error(finData.error || "Failed finalize");
-
-      alert(
-        `Ticket sendt (AI forbedret)!\nTid brukt: ${finData.time_to_submit_ms} ms\nLogget i tabell: ${finData.log_table}`
-      );
+      chatData = await chatRes.json();
+      if (!chatRes.ok) throw new Error(chatData.error || "Failed AI chat turn");
     }
 
+    // Step 3: AI is satisfied — finalize and submit
+    const finRes = await fetch("http://127.0.0.1:5000/api/ai/finalize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId })
+    });
+
+    const finData = await finRes.json();
+    if (!finRes.ok) throw new Error(finData.error || "Failed to finalize ticket");
+
+    alert(`Ticket sendt (AI forbedret)!\nTid brukt: ${finData.time_to_submit_ms} ms\nLogget i tabell: ${finData.log_table}`);
+    console.log("AI final:", finData.final);
+
+    // Reset form
     confirmed = false;
     userId = null;
-
     document.getElementById("submitBtn").disabled = true;
-    document.getElementById("userStatus").textContent =
-      "Bekreft bruker for å starte ny timer.";
-
+    document.getElementById("userStatus").textContent = "Bekreft bruker for å starte ny timer.";
     document.getElementById("inquiry").value = "-- Velg --";
     document.getElementById("Description").value = "";
     document.getElementById("LongDescription").value = "";
-
     clearAllErrors();
+
   } catch (err) {
     console.error(err);
     alert("Noe gikk galt: " + err.message);
