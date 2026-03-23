@@ -77,6 +77,20 @@ function attachLiveValidation() {
   }
 }
 
+function showSuccessMessage(tableNumber) {
+  const existing = document.getElementById("successMessage");
+  if (existing) existing.remove();
+
+  const msg = document.createElement("p");
+  msg.id = "successMessage";
+  msg.textContent = `✓ Ticket sendt! Logget i tabell ${tableNumber}.`;
+  msg.style.cssText = "color: green; font-weight: bold; margin-top: 16px;";
+
+  // Append at the bottom of the form container
+  const container = document.querySelector(".container");
+  if (container) container.appendChild(msg);
+}
+
 async function confirmUser() {
   const username = document.getElementById("username").value;
   const status = document.getElementById("userStatus");
@@ -124,6 +138,8 @@ function askQuestion(questionText, type, choices) {
 }
 
 async function submitForm() {
+  const submitBtn = document.getElementById("submitBtn");
+
   try {
     if (!confirmed || !userId) {
       alert("Bekreft bruker først.");
@@ -131,6 +147,9 @@ async function submitForm() {
     }
 
     if (!validateForm()) return;
+
+    submitBtn.classList.add("loading");
+    submitBtn.disabled = true;
 
     const inquiry = document.getElementById("inquiry").value;
     const shortDesc = document.getElementById("Description").value.trim();
@@ -177,22 +196,28 @@ ${longDesc}`;
 
     const finData = await finRes.json();
     if (!finRes.ok) throw new Error(finData.error || "Failed to finalize ticket");
+    alert(`Ticket sendt!\nTid brukt: ${finData.time_to_submit_ms} ms\nLogget i tabell: ${finData.log_table}`);
 
-    alert(`Ticket sendt (AI forbedret)!\nTid brukt: ${finData.time_to_submit_ms} ms\nLogget i tabell: ${finData.log_table}`);
     console.log("AI final:", finData.final);
 
     // Reset form
     confirmed = false;
     userId = null;
-    document.getElementById("submitBtn").disabled = true;
+    submitBtn.disabled = true;
+    submitBtn.classList.remove("loading");
     document.getElementById("userStatus").textContent = "Bekreft bruker for å starte ny timer.";
     document.getElementById("inquiry").value = "-- Velg --";
     document.getElementById("Description").value = "";
     document.getElementById("LongDescription").value = "";
     clearAllErrors();
 
+    // Show success message at the bottom of the page instead of alert
+    showSuccessMessage(finData.log_table);
+
   } catch (err) {
     console.error(err);
+    submitBtn.classList.remove("loading");
+    submitBtn.disabled = false;
     alert("Noe gikk galt: " + err.message);
   }
 }

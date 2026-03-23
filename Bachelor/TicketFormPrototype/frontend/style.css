@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins&display=swap');
 .bodyContainer {  display: grid;
   grid-template-columns: auto auto auto;
   grid-template-rows: 1fr;
@@ -32,7 +33,50 @@ grid-column-gap: 0px;
 grid-row-gap: 10px;
 padding: 5px;
 }
-
+#submitBtn {
+    background-color: aqua;
+    border: none;
+    font-size: 20px;
+    color : black;
+    padding: 0.75rem 1.5rem;
+    border-radius: 0.15rem;
+    transition: .3s;
+    cursor: pointer;
+    position: relative;
+}
+#submitBtn:hover {
+    background-color: #007786;
+    color: white;
+}
+#submitBtn:after {
+    content: "";
+    display: block;
+    width: 1.2rem;
+    height: 1.2rem;
+    position: absolute;
+    top: 27%;
+    left: 43%;
+    border: 0.15rem solid transparent;
+    border-right-color: white;
+    border-radius: 50%;
+    animation: animate .7s linear
+    infinite;
+    opacity: 0;
+}
+@keyframes animate {
+  from {
+    transform: rotate(0);
+  }
+  to{
+    transform: rotate(360deg);
+  }
+}
+#submitBtn.loading {
+    color: transparent;
+}
+#submitBtn.loading::after {
+    opacity: 1;
+}
 #warning{
     color: red;
 }
