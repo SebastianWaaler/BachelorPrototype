@@ -110,6 +110,7 @@ def init_db(): #Creates the tables
             title TEXT NOT NULL,
             description TEXT NOT NULL,
             time_to_submit_ms INTEGER,
+            time_to_send_in_ms INTEGER,
             ai_used INTEGER DEFAULT 0,
             status TEXT DEFAULT 'open'
         );
@@ -118,6 +119,7 @@ def init_db(): #Creates the tables
             title TEXT NOT NULL,
             description TEXT NOT NULL,
             time_to_submit_ms INTEGER,
+            time_to_send_in_ms INTEGER,
             ai_used INTEGER DEFAULT 0,
             status TEXT DEFAULT 'open'
         );
@@ -126,6 +128,7 @@ def init_db(): #Creates the tables
             title TEXT NOT NULL,
             description TEXT NOT NULL,
             time_to_submit_ms INTEGER,
+            time_to_send_in_ms INTEGER,
             ai_used INTEGER DEFAULT 0,
             status TEXT DEFAULT 'open'
         );
@@ -134,6 +137,7 @@ def init_db(): #Creates the tables
             title TEXT NOT NULL,
             description TEXT NOT NULL,
             time_to_submit_ms INTEGER,
+            time_to_send_in_ms INTEGER,
             ai_used INTEGER DEFAULT 0,
             status TEXT DEFAULT 'open'
         );
@@ -142,6 +146,7 @@ def init_db(): #Creates the tables
             title TEXT NOT NULL,
             description TEXT NOT NULL,
             time_to_submit_ms INTEGER,
+            time_to_send_in_ms INTEGER,
             ai_used INTEGER DEFAULT 0,
             status TEXT DEFAULT 'open'
         );
@@ -180,6 +185,8 @@ def init_db(): #Creates the tables
         add_col("ALTER TABLE ticket_drafts ADD COLUMN submitted_at INTEGER;")
     if "log_table" not in cols:
         add_col("ALTER TABLE ticket_drafts ADD COLUMN log_table INTEGER;")
+    if "send_inn_at" not in cols:
+        add_col("ALTER TABLE ticket_drafts ADD COLUMN send_inn_at INTEGER;")
 
     # Backfill timestamps for older databases so inserts/updates don't fail on NULL values.
     conn.execute(
@@ -477,6 +484,8 @@ def create_ticket():
 
     created_at = now_s()
     time_spent = created_at - draft["started_at"]
+    send_inn_at = draft["send_inn_at"] if draft["send_inn_at"] else created_at
+    time_to_send_inn = send_inn_at - draft["started_at"]
 
     tbl_idx = draft["log_table"]
     try:
@@ -488,8 +497,8 @@ def create_ticket():
     tickets_table = f"tickets_{tbl_idx}"
 
     conn.execute(
-        f"INSERT INTO {tickets_table} (user_id, title, description, time_to_submit_ms, ai_used, status) VALUES (?, ?, ?, ?, 0, 'open')",
-        (user_id, title, description, time_spent)
+        f"INSERT INTO {tickets_table} (user_id, title, description, time_to_submit_ms, time_to_send_in_ms, ai_used, status) VALUES (?, ?, ?, ?, ?, 0, 'open')",
+        (user_id, title, description, time_spent, time_to_send_inn)
     )
 
     conn.execute(
@@ -559,8 +568,8 @@ def ai_chat():
     # --- First call: save title + description, start fresh conversation ---
     if title and description:
         conn.execute(
-            "UPDATE ticket_drafts SET draft_title=?, draft_description=?, ai_questions_json=? WHERE user_id=?",
-            (title, description, json.dumps([]), user_id)
+            "UPDATE ticket_drafts SET draft_title=?, draft_description=?, ai_questions_json=?, send_inn_at=? WHERE user_id=?",
+            (title, description, json.dumps([]), now_s(), user_id)
         )
         conn.commit()
         conversation = []
@@ -664,6 +673,8 @@ def ai_finalize():
     improved_description = final["improved_description"]
     created_at = now_s()
     time_spent = created_at - draft["started_at"]
+    send_inn_at = draft["send_inn_at"] if draft["send_inn_at"] else created_at
+    time_to_send_inn = send_inn_at - draft["started_at"]
 
     tbl_idx = draft["log_table"] or 1
     try:
@@ -675,8 +686,8 @@ def ai_finalize():
     tickets_table = f"tickets_{tbl_idx}"
 
     conn.execute(
-        f"INSERT INTO {tickets_table} (user_id, title, description, time_to_submit_ms, ai_used, status) VALUES (?, ?, ?, ?, 1, 'open')",
-        (user_id, title, improved_description, time_spent)
+        f"INSERT INTO {tickets_table} (user_id, title, description, time_to_submit_ms, time_to_send_in_ms, ai_used, status) VALUES (?, ?, ?, ?, ?, 1, 'open')",
+        (user_id, title, improved_description, time_spent, time_to_send_inn)
     )
 
     conn.execute(

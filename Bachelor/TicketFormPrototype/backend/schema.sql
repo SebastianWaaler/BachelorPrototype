@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS ticket_drafts (
   ai_questions_json TEXT,
   ai_answers_json TEXT,
   started_at INTEGER,
+  send_inn_at INTEGER,
   submitted_at INTEGER,
   log_table INTEGER,
   FOREIGN KEY (user_id) REFERENCES users(id)
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS tickets_1 (
   title TEXT NOT NULL,
   description TEXT NOT NULL,
   time_to_submit_ms INTEGER,
+  time_to_send_inn_ms INTEGER,
   ai_used INTEGER DEFAULT 0,
   status TEXT DEFAULT 'open',
   FOREIGN KEY (user_id) REFERENCES users(id)
@@ -35,6 +37,7 @@ CREATE TABLE IF NOT EXISTS tickets_2 (
   title TEXT NOT NULL,
   description TEXT NOT NULL,
   time_to_submit_ms INTEGER,
+  time_to_send_inn_ms INTEGER,
   ai_used INTEGER DEFAULT 0,
   status TEXT DEFAULT 'open',
   FOREIGN KEY (user_id) REFERENCES users(id)
@@ -44,6 +47,7 @@ CREATE TABLE IF NOT EXISTS tickets_3 (
   title TEXT NOT NULL,
   description TEXT NOT NULL,
   time_to_submit_ms INTEGER,
+  time_to_send_inn_ms INTEGER,
   ai_used INTEGER DEFAULT 0,
   status TEXT DEFAULT 'open',
   FOREIGN KEY (user_id) REFERENCES users(id)
@@ -53,6 +57,7 @@ CREATE TABLE IF NOT EXISTS tickets_4 (
   title TEXT NOT NULL,
   description TEXT NOT NULL,
   time_to_submit_ms INTEGER,
+  time_to_send_inn_ms INTEGER,
   ai_used INTEGER DEFAULT 0,
   status TEXT DEFAULT 'open',
   FOREIGN KEY (user_id) REFERENCES users(id)
@@ -62,6 +67,7 @@ CREATE TABLE IF NOT EXISTS tickets_5 (
   title TEXT NOT NULL,
   description TEXT NOT NULL,
   time_to_submit_ms INTEGER,
+  time_to_send_inn_ms INTEGER,
   ai_used INTEGER DEFAULT 0,
   status TEXT DEFAULT 'open',
   FOREIGN KEY (user_id) REFERENCES users(id)
