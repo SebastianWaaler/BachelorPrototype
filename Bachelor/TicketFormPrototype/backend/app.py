@@ -708,6 +708,6 @@ if __name__ == "__main__":
 
     # Ensure DB schema exists before serving requests.
     init_db()
-
+ 
     # Flask dev server (debug=True enables auto-reload + verbose errors).
     app.run(host="127.0.0.1", port=5000, debug=True)
