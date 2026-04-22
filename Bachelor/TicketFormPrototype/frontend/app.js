@@ -225,3 +225,7 @@ ${longDesc}`;
 document.addEventListener("DOMContentLoaded", () => {
   attachLiveValidation();
 });
+
+if (typeof module !== 'undefined') {
+  module.exports = { parseUserId, validateForm };
+}

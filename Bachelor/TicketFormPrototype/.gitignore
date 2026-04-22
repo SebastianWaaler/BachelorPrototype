@@ -1,0 +1,11 @@
+# Database temp files
+*.db-shm
+*.db-wal
+
+# Node modules
+node_modules/
+frontend/node_modules/
+
+# Python venv
+backend/.venv312/
+.venv/
